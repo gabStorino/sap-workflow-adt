@@ -1,9 +1,9 @@
 {
   "manifest_version": "0.2",
   "name": "sap-workflow-adt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "SAP Workflow ADT — ABAP + SAP Business Workflow",
-  "description": "Fork of dassian-adt with extra tools for SAP Business Workflow development (package_create, msag_set_messages, wf_class_scaffold).",
+  "description": "Fork of dassian-adt with extra tools for SAP Business Workflow development (package_create, msag_set_messages, wf_class_scaffold, wf_bo_approval_scaffold).",
   "author": {
     "name": "Gabriela Storino",
     "email": "gabriela.storino.ig@gmail.com"
@@ -126,6 +126,10 @@
     {
       "name": "wf_class_scaffold",
       "description": "Generate IF_WORKFLOW class + CX_BO_* exceptions"
+    },
+    {
+      "name": "wf_bo_approval_scaffold",
+      "description": "Approve/reject workflow on a Z subtype of any BOR object: pre-flight, ABAP objects via ADT, SAP GUI guide"
     }
   ],
   "compatibility": {

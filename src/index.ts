@@ -33,6 +33,7 @@ import { TraceHandlers }     from './handlers/TraceHandlers.js';
 import { DdicHandlers }      from './handlers/DdicHandlers.js';
 import { BspHandlers }       from './handlers/BspHandlers.js';
 import { WorkflowHandlers }  from './handlers/WorkflowHandlers.js';
+import { BoApprovalHandlers } from './handlers/BoApprovalHandlers.js';
 import { resolveSystemConfigs, AuthConfig } from './lib/auth.js';
 import { logToolError, extractRawResponse, recordRawHttpFailure, consumeRawHttpFailure } from './lib/logger.js';
 import { parseAdtError } from './lib/errors.js';
@@ -173,6 +174,7 @@ function createSystemEntry(
     new DdicHandlers(client),
     new BspHandlers(client),
     new WorkflowHandlers(client),
+    new BoApprovalHandlers(client),
   ];
 
   for (const h of handlers) {

@@ -2,7 +2,7 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { BaseHandler } from './BaseHandler.js';
 import type { ToolDefinition } from '../types/tools.js';
 import type { InactiveObject } from 'abap-adt-api';
-import { buildObjectUrl, buildPackageUrl, getSupportedTypes } from '../lib/urlBuilder.js';
+import { buildObjectUrl, buildPackageUrl, buildFunctionModuleUrl, getSupportedTypes } from '../lib/urlBuilder.js';
 import { formatError, parseAdtError, formatActivationMessages } from '../lib/errors.js';
 
 const SUPPORTED = getSupportedTypes().join(', ');
@@ -58,7 +58,7 @@ export class ObjectHandlers extends BaseHandler {
           'Must be called after abap_set_source or abap_create. ' +
           'Returns success:true with empty messages if clean. ' +
           'Returns success:false with error messages if activation fails — read them, fix the source, and retry. ' +
-          'For FUGR/FF (function modules): activation always targets the parent function group — provide fugr param.',
+          'For FUGR/FF (function modules): the parent function group and the FM are activated together — provide fugr param.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -619,10 +619,22 @@ out->write( 'OK' ).
       objectUrl = buildObjectUrl(args.name, args.type);
     }
 
+    const isFm = args.type?.toUpperCase() === 'FUGR/FF' && args.name.toUpperCase() !== activateName;
     try {
       await this.notify(`Activating ${activateName}…`);
-      const result = await this.withSession(() =>
-        this.adtclient.activate(activateName, objectUrl)
+      // Function module: activate the group AND the FM in one request. Activating only the
+      // group can report success while the FM itself stays inactive (seen on S/4HANA 2020).
+      const result = await this.withSession(() => isFm
+        ? this.adtclient.activate([
+            { 'adtcore:uri': objectUrl, 'adtcore:type': 'FUGR/F', 'adtcore:name': activateName, 'adtcore:parentUri': '' },
+            {
+              'adtcore:uri': buildFunctionModuleUrl(activateName, args.name.toUpperCase()),
+              'adtcore:type': 'FUGR/FF',
+              'adtcore:name': args.name.toUpperCase(),
+              'adtcore:parentUri': objectUrl,
+            },
+          ], true)
+        : this.adtclient.activate(activateName, objectUrl)
       );
 
       if (result && !result.success) {

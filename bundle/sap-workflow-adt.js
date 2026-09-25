@@ -39699,7 +39699,7 @@ var require_tablecontents = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.servicePreviewUrl = exports2.parseBindingDetails = exports2.decodeQueryResult = exports2.extractBindingLinks = exports2.parseServiceBinding = exports2.TypeKinds = void 0;
-    exports2.parseQueryResponse = parseQueryResponse3;
+    exports2.parseQueryResponse = parseQueryResponse4;
     exports2.tableContents = tableContents;
     exports2.runQuery = runQuery;
     exports2.bindingDetails = bindingDetails;
@@ -39818,7 +39818,7 @@ var require_tablecontents = __commonJS({
       const meta3 = { name, type, description, keyAttribute, colType, isKeyFigure, length };
       return { values, meta: meta3 };
     };
-    function parseQueryResponse3(body) {
+    function parseQueryResponse4(body) {
       const raw = (0, utilities_1.fullParse)(body, { removeNSPrefix: true, parseTagValue: false });
       const fields = (0, utilities_1.xmlArray)(raw, "tableData", "columns").map(parseColumn);
       const columns = fields.map((c) => c.meta);
@@ -39865,7 +39865,7 @@ var require_tablecontents = __commonJS({
     async function tableContents(h, ddicEntityName, rowNumber = 100, decode3 = true, sqlQuery = "") {
       const qs = { rowNumber, ddicEntityName };
       const response = await h.request(`/sap/bc/adt/datapreview/ddic`, { qs, headers: { Accept: "application/*" }, method: "POST", body: sqlQuery });
-      const queryResult = parseQueryResponse3(response.body);
+      const queryResult = parseQueryResponse4(response.body);
       if (decode3)
         return (0, exports2.decodeQueryResult)(queryResult);
       return queryResult;
@@ -39873,7 +39873,7 @@ var require_tablecontents = __commonJS({
     async function runQuery(h, sqlQuery, rowNumber = 100, decode3 = true) {
       const qs = { rowNumber };
       const response = await h.request(`/sap/bc/adt/datapreview/freestyle`, { qs, headers: { Accept: "application/*" }, method: "POST", body: sqlQuery });
-      const queryResult = parseQueryResponse3(response.body);
+      const queryResult = parseQueryResponse4(response.body);
       if (decode3)
         return (0, exports2.decodeQueryResult)(queryResult);
       return queryResult;
@@ -58621,7 +58621,7 @@ var ObjectHandlers = class _ObjectHandlers extends BaseHandler {
       {
         name: "abap_activate",
         annotations: { idempotentHint: true },
-        description: "Activate an ABAP object, making it the active version. Must be called after abap_set_source or abap_create. Returns success:true with empty messages if clean. Returns success:false with error messages if activation fails \u2014 read them, fix the source, and retry. For FUGR/FF (function modules): activation always targets the parent function group \u2014 provide fugr param.",
+        description: "Activate an ABAP object, making it the active version. Must be called after abap_set_source or abap_create. Returns success:true with empty messages if clean. Returns success:false with error messages if activation fails \u2014 read them, fix the source, and retry. For FUGR/FF (function modules): the parent function group and the FM are activated together \u2014 provide fugr param.",
         inputSchema: {
           type: "object",
           properties: {
@@ -59132,10 +59132,19 @@ out->write( 'OK' ).
       activateName = args.name.toUpperCase();
       objectUrl = buildObjectUrl(args.name, args.type);
     }
+    const isFm = args.type?.toUpperCase() === "FUGR/FF" && args.name.toUpperCase() !== activateName;
     try {
       await this.notify(`Activating ${activateName}\u2026`);
       const result = await this.withSession(
-        () => this.adtclient.activate(activateName, objectUrl)
+        () => isFm ? this.adtclient.activate([
+          { "adtcore:uri": objectUrl, "adtcore:type": "FUGR/F", "adtcore:name": activateName, "adtcore:parentUri": "" },
+          {
+            "adtcore:uri": buildFunctionModuleUrl(activateName, args.name.toUpperCase()),
+            "adtcore:type": "FUGR/FF",
+            "adtcore:name": args.name.toUpperCase(),
+            "adtcore:parentUri": objectUrl
+          }
+        ], true) : this.adtclient.activate(activateName, objectUrl)
       );
       if (result && !result.success) {
         const errorText = formatActivationMessages(result.messages || []);
@@ -63509,6 +63518,658 @@ ${steps.map((s) => `${s.ok ? "OK " : "ERR"} ${s.step}${s.detail ? ` \u2014 ${s.d
   }
 };
 
+// src/handlers/BoApprovalHandlers.ts
+var import_tablecontents3 = __toESM(require_tablecontents());
+
+// src/lib/boApprovalTemplates.ts
+var Z_NAME = /^[ZY][A-Z0-9_]*$/;
+var BOR_NAME = /^[A-Z0-9_]+$/;
+function cut(s, max) {
+  return s.length > max ? s.slice(0, max).replace(/_+$/, "") : s;
+}
+function checkZ(label, value, max) {
+  const v = value.toUpperCase().trim();
+  if (!Z_NAME.test(v)) throw new Error(`${label} "${value}" must start with Z or Y and contain only A-Z, 0-9 and _`);
+  if (v.length > max) throw new Error(`${label} "${v}" is longer than ${max} characters`);
+  return v;
+}
+function deriveBoApprovalNames(input) {
+  const supertype = String(input.supertype || "").toUpperCase().trim();
+  if (!supertype || !BOR_NAME.test(supertype) || supertype.length > 10) {
+    throw new Error(`supertype "${input.supertype}" must be a BOR object type (max 10 chars), e.g. BUS2012`);
+  }
+  const subtype = checkZ("subtype", String(input.subtype || ""), 10);
+  if (subtype === supertype) throw new Error("subtype must differ from supertype");
+  const base = subtype.replace(/^[ZY]/, "").replace(/^_+/, "") || subtype;
+  const p = subtype[0];
+  const event = String(input.event || "ZCHANGED").toUpperCase().trim();
+  if (!BOR_NAME.test(event) || event.length > 32) throw new Error(`event "${input.event}" must be A-Z/0-9/_ (max 32 chars)`);
+  return {
+    supertype,
+    subtype,
+    base,
+    event,
+    displayMethod: "DISPLAYNEW",
+    updateMethod: "UPDATETABLE",
+    statusParam: "Status",
+    table: checkZ("table", input.table || `${p}${cut(base, 11)}_APR`, 16),
+    functionGroup: checkZ("functionGroup", input.functionGroup || `${p}${cut(base, 22)}_WF`, 26),
+    updateFm: checkZ("updateFm", input.updateFm || `${p}${cut(base, 18)}_UPD_STATUS`, 30),
+    raiseFm: checkZ("raiseFm", input.raiseFm || `${p}${cut(base, 19)}_RAISE_EVT`, 30),
+    wfAbbrev: checkZ("wfAbbrev", input.wfAbbrev || `${p}${cut(base, 7)}_APR`, 12),
+    tsDisplayAbbrev: checkZ("tsDisplayAbbrev", input.tsDisplayAbbrev || `${p}${cut(base, 6)}_DISP`, 12),
+    tsUpdateAbbrev: checkZ("tsUpdateAbbrev", input.tsUpdateAbbrev || `${p}${cut(base, 7)}_UPD`, 12)
+  };
+}
+function keyFieldName(k) {
+  return k.refField.toLowerCase();
+}
+function ddlType(k) {
+  if (k.rollname) return k.rollname.toLowerCase();
+  const len = k.length || 10;
+  switch ((k.intType || "C").toUpperCase()) {
+    case "N":
+      return `abap.numc(${len})`;
+    case "D":
+      return "abap.dats";
+    case "T":
+      return "abap.tims";
+    default:
+      return `abap.char(${len})`;
+  }
+}
+function abapType(k) {
+  if (k.rollname) return k.rollname.toLowerCase();
+  return `${k.refStruct.toLowerCase()}-${k.refField.toLowerCase()}`;
+}
+function assertKeys(keys) {
+  if (!keys || keys.length === 0) throw new Error("the BO has no key fields (SWOTDV VERBTYPE = K) \u2014 check the supertype");
+  const clash = keys.find((k) => ["mandt", "ardate", "artime", "status", "descr", "wf_id", "ernam"].includes(keyFieldName(k)));
+  if (clash) throw new Error(`key field ${clash.refField} clashes with a fixed column of the approval table`);
+}
+function buildApprovalTableSource(names, keys) {
+  assertKeys(keys);
+  const width = Math.max(6, ...keys.map((k) => keyFieldName(k).length));
+  const pad = (s) => s.padEnd(width);
+  const keyLines = keys.map((k) => `  key ${pad(keyFieldName(k))} : ${ddlType(k)} not null;`).join("\n");
+  return [
+    `@EndUserText.label : 'WF ${names.subtype}: log de aprovacao/rejeicao'`,
+    `@AbapCatalog.enhancementCategory : #NOT_EXTENSIBLE`,
+    `@AbapCatalog.tableCategory : #TRANSPARENT`,
+    `@AbapCatalog.deliveryClass : #A`,
+    `@AbapCatalog.dataMaintenance : #RESTRICTED`,
+    `define table ${names.table.toLowerCase()} {`,
+    `  key ${pad("mandt")} : mandt not null;`,
+    keyLines,
+    `  key ${pad("ardate")} : sydats not null;`,
+    `  key ${pad("artime")} : syuzeit not null;`,
+    `      ${pad("status")} : abap.char(1);`,
+    `      ${pad("descr")} : abap.char(40);`,
+    `      ${pad("wf_id")} : sww_wiid;`,
+    `      ${pad("ernam")} : ernam;`,
+    ``,
+    `}`
+  ].join("\n");
+}
+function fmKeyParams(keys) {
+  return keys.map((k) => `    VALUE(iv_${keyFieldName(k)}) TYPE ${abapType(k)}`).join("\n");
+}
+function mainTableOf(keys) {
+  const t = keys[0]?.refStruct?.toUpperCase();
+  return t && keys.every((k) => k.refStruct.toUpperCase() === t) ? t : void 0;
+}
+function buildUpdateFmSource(names, keys) {
+  assertKeys(keys);
+  const main = mainTableOf(keys);
+  const firstKey = keyFieldName(keys[0]);
+  const where = keys.map((k) => `${keyFieldName(k)} = @iv_${keyFieldName(k)}`).join("\n      AND ");
+  const assign = keys.map((k) => `  ls_log-${keyFieldName(k)} = iv_${keyFieldName(k)}.`).join("\n");
+  const existence = main ? [
+    `  SELECT SINGLE @abap_true FROM ${main.toLowerCase()}`,
+    `    WHERE ${where}`,
+    `    INTO @DATA(lv_exists).`,
+    `  IF sy-subrc <> 0.`,
+    `    MESSAGE e398(00) WITH 'Documento' iv_${firstKey} 'nao encontrado' space`,
+    `      RAISING not_found.`,
+    `  ENDIF.`,
+    ``
+  ].join("\n") : `  " Key fields come from different tables: existence check left to the caller.
+
+`;
+  return `FUNCTION ${names.updateFm.toLowerCase()}
+  IMPORTING
+${fmKeyParams(keys)}
+    VALUE(iv_status) TYPE ${names.table.toLowerCase()}-status
+    VALUE(iv_wf_id) TYPE sww_wiid OPTIONAL
+  EXCEPTIONS
+    invalid_status
+    not_found
+    update_failed.
+
+*----------------------------------------------------------------------*
+* Called by the background BOR method ${names.subtype}.${names.updateMethod}.
+* Writes the user decision (A = approved / R = rejected).
+* No COMMIT WORK: the workflow runtime commits the work item.
+* Generated by sap-workflow-adt wf_bo_approval_scaffold.
+*----------------------------------------------------------------------*
+
+  DATA ls_log TYPE ${names.table.toLowerCase()}.
+
+  IF iv_status <> 'A' AND iv_status <> 'R'.
+    MESSAGE e398(00) WITH 'Status invalido:' iv_status 'documento' iv_${firstKey}
+      RAISING invalid_status.
+  ENDIF.
+
+${existence}${assign}
+  ls_log-ardate = sy-datum.
+  ls_log-artime = sy-uzeit.
+  ls_log-status = iv_status.
+  ls_log-descr  = SWITCH #( iv_status
+                            WHEN 'A' THEN 'Aprovado'
+                            WHEN 'R' THEN 'Rejeitado' ).
+  ls_log-wf_id  = iv_wf_id.
+  ls_log-ernam  = sy-uname.
+
+  " MODIFY: a second decision in the same second does not dump
+  MODIFY ${names.table.toLowerCase()} FROM @ls_log.
+  IF sy-subrc <> 0.
+    MESSAGE e398(00) WITH 'Erro ao gravar ${names.table}' iv_${firstKey} space space
+      RAISING update_failed.
+  ENDIF.
+
+ENDFUNCTION.`;
+}
+function buildRaiseEventFmSource(names, keys) {
+  assertKeys(keys);
+  const keyStruct = keys.length === 1 ? `  lv_objkey = iv_${keyFieldName(keys[0])}.` : [
+    `  " Composite key: fixed-width concatenation in SWOTDV key order`,
+    `  DATA: BEGIN OF ls_key,`,
+    ...keys.map((k, i) => `          ${keyFieldName(k)} TYPE ${abapType(k)}${i === keys.length - 1 ? "," : ","}`),
+    `        END OF ls_key.`,
+    ...keys.map((k) => `  ls_key-${keyFieldName(k)} = iv_${keyFieldName(k)}.`),
+    `  lv_objkey = ls_key.`
+  ].join("\n");
+  return `FUNCTION ${names.raiseFm.toLowerCase()}
+  IMPORTING
+${fmKeyParams(keys)}
+  EXPORTING
+    VALUE(ev_return_code) TYPE sysubrc.
+
+*----------------------------------------------------------------------*
+* Optional alternative to SWEC: raise ${names.subtype}.${names.event} from the
+* document save (user exit / BAdI running BEFORE the standard COMMIT WORK).
+* - commit_work = space: the event is written with the application LUW.
+* - never COMMIT WORK here, never MESSAGE type E (would block the save).
+* Generated by sap-workflow-adt wf_bo_approval_scaffold.
+*----------------------------------------------------------------------*
+
+  DATA: lv_objkey   TYPE swr_struct-object_key,
+        lt_msglines TYPE STANDARD TABLE OF swr_messag.
+
+${keyStruct}
+
+  CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+    EXPORTING
+      object_type   = '${names.subtype}'
+      object_key    = lv_objkey
+      event         = '${names.event}'
+      commit_work   = space
+    IMPORTING
+      return_code   = ev_return_code
+    TABLES
+      message_lines = lt_msglines.
+
+  IF ev_return_code <> 0.
+    LOOP AT lt_msglines INTO DATA(ls_msg).
+      MESSAGE s398(00) WITH 'Evento ${names.event} nao criado:' ls_msg-line
+        DISPLAY LIKE 'W'.
+      EXIT.
+    ENDLOOP.
+  ENDIF.
+
+ENDFUNCTION.`;
+}
+var DISPLAY_PRESETS = {
+  BUS2012: {
+    kind: "fm",
+    verified: true,
+    fmCall: [
+      `  CALL FUNCTION 'ME_DISPLAY_PURCHASE_DOCUMENT'`,
+      `    EXPORTING`,
+      `      i_ebeln = object-key-{key:PURCHASEORDER}`,
+      `      i_enjoy = 'X'`,
+      `    EXCEPTIONS`,
+      `      not_found            = 1`,
+      `      no_authority         = 2`,
+      `      invalid_call         = 3`,
+      `      preview_not_possible = 4`,
+      `      OTHERS               = 5.`
+    ].join("\n")
+  },
+  BUS2105: { kind: "tcode", tcode: "ME53N", paramIds: ["BAN"], verified: false },
+  BUS2032: { kind: "tcode", tcode: "VA03", paramIds: ["AUN"], verified: false },
+  BUS1001006: { kind: "tcode", tcode: "MM03", paramIds: ["MAT"], verified: false },
+  BUS2081: { kind: "tcode", tcode: "MIR4", paramIds: ["RBN", "GJR"], verified: false }
+};
+function resolveDisplay(input, supertype) {
+  if (input.displayFm) {
+    return {
+      kind: "fm",
+      verified: false,
+      fmCall: `  CALL FUNCTION '${String(input.displayFm).toUpperCase()}'
+    EXPORTING
+      " TODO: map object-key-<field> to the FM parameters
+    EXCEPTIONS
+      OTHERS = 1.`,
+      note: `Custom display FM ${String(input.displayFm).toUpperCase()}: complete the EXPORTING mapping before pasting.`
+    };
+  }
+  if (input.displayTcode) {
+    const ids = Array.isArray(input.displayParamIds) ? input.displayParamIds : String(input.displayParamIds || "").split(",").map((s) => s.trim()).filter(Boolean);
+    return { kind: "tcode", tcode: String(input.displayTcode).toUpperCase(), paramIds: ids.map((i) => i.toUpperCase()), verified: false };
+  }
+  const preset = DISPLAY_PRESETS[supertype];
+  if (preset) return preset;
+  return {
+    kind: "todo",
+    verified: false,
+    note: `No display preset for ${supertype}. Pass displayFm or displayTcode + displayParamIds, or complete the TODO in the method.`
+  };
+}
+function displayBody(spec, keys) {
+  if (spec.kind === "fm") {
+    return String(spec.fmCall).replace(/\{key:([A-Z0-9_]+)\}/g, (_m, verb) => {
+      const k = keys.find((x) => x.verb.toUpperCase() === verb) || keys[0];
+      return k.verb.toLowerCase();
+    }) + `
+  IF sy-subrc <> 0.
+    exit_return 9001 sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.`;
+  }
+  if (spec.kind === "tcode") {
+    const sets = (spec.paramIds || []).map(
+      (id, i) => keys[i] ? `  SET PARAMETER ID '${id}' FIELD object-key-${keys[i].verb.toLowerCase()}.` : `  " TODO: SET PARAMETER ID '${id}' (no matching key field)`
+    ).join("\n");
+    return `${sets}
+  TRY.
+      CALL TRANSACTION '${spec.tcode}' WITH AUTHORITY-CHECK AND SKIP FIRST SCREEN.
+    CATCH cx_sy_authorization_error.
+      exit_return 9001 'Sem autorizacao para' '${spec.tcode}' space space.
+  ENDTRY.`;
+  }
+  return `  " TODO: display the document for object-key-${keys[0].verb.toLowerCase()}
+  "       (CALL FUNCTION ... or SET PARAMETER ID + CALL TRANSACTION ... AND SKIP FIRST SCREEN)`;
+}
+function buildBorMethodsSource(names, keys, spec) {
+  assertKeys(keys);
+  const exporting = keys.map((k) => `      iv_${keyFieldName(k)} = object-key-${k.verb.toLowerCase()}`).join("\n");
+  return `BEGIN_METHOD ${names.displayMethod} CHANGING CONTAINER.
+${displayBody(spec, keys)}
+END_METHOD.
+
+BEGIN_METHOD ${names.updateMethod} CHANGING CONTAINER.
+  DATA lv_status TYPE ${names.table.toLowerCase()}-status.
+  swc_get_element container '${names.statusParam}' lv_status.
+  CALL FUNCTION '${names.updateFm}'
+    EXPORTING
+${exporting}
+      iv_status = lv_status
+    EXCEPTIONS
+      invalid_status = 1
+      not_found      = 2
+      update_failed  = 3
+      OTHERS         = 4.
+  IF sy-subrc <> 0.
+    exit_return 9001 sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+END_METHOD.`;
+}
+function buildGuiGuide(names, ctx) {
+  const keyList = ctx.keys.map((k) => `${k.verb} (${k.refStruct}-${k.refField})`).join(", ");
+  const cd = ctx.cdObject || "<objeto de change document>";
+  return [
+    {
+      tcode: "SWO1",
+      title: `Subtipo ${names.subtype} de ${names.supertype}`,
+      actions: [
+        `Tp.obj. = ${names.supertype} \u2192 bot\xE3o Subtipo \u2192 Tipo de objeto ${names.subtype}, Programa ${names.subtype}, Aplica\xE7\xE3o conforme o m\xF3dulo \u2192 \u2714 \u2192 Objeto local (ou pacote/ordem).`,
+        `Chave herdada: ${keyList}.`,
+        `Eventos \u2192 Criar \u2192 ${names.event}.`,
+        `M\xE9todos \u2192 Criar ("com FM como modelo?" N\xE3o): ${names.displayMethod} com Di\xE1logo \u2714 e S\xEDncrono \u2714; ${names.updateMethod} com Di\xE1logo DESMARCADO.`,
+        `${names.updateMethod} \u2192 Par\xE2metro \u2192 Criar ("com campo ABAP Dictionary?" Sim) \u2192 tabela ${names.table}, campo STATUS \u2192 nome ${names.statusParam}, Importa\xE7\xE3o \u2714, obrigat\xF3rio \u2714.`,
+        `Cada m\xE9todo \u2192 Exce\xE7\xF5es \u2192 Criar 9001, Erro de aplica\xE7\xE3o, \xE1rea 00, mensagem 398.`,
+        `Salvar. ${names.displayMethod} \u2192 Programa \u2192 "gerar padr\xE3o?" Sim (pode perguntar 2x) \u2192 colar o c\xF3digo de borMethodsSource \u2192 Ctrl+F2 \u2192 salvar \u2192 F3.`,
+        `Processar \u203A Modificar status da libera\xE7\xE3o \u203A Componente tp.objeto \u203A Em implementado (os 2 m\xE9todos e o evento); depois \u203A Tipo de objeto \u203A Em implementado.`,
+        `Gerar (Ctrl+F3). N\xE3o criar delega\xE7\xE3o em sistema compartilhado sem autoriza\xE7\xE3o (s\xF3 existe uma por supertipo).`
+      ]
+    },
+    {
+      tcode: "SWEC",
+      title: "Disparo do evento no save (sem c\xF3digo)",
+      actions: [
+        `Entradas novas: Objeto doc.modif. ${cd}, Categoria BO, Tipo ${names.subtype}, Evento ${names.event}, Ao modif. \u2192 salvar (ordem de workbench; tabela cross-client).`,
+        `Alternativa com c\xF3digo: chamar ${names.raiseFm} numa exit/BAdI do save (gerado com includeRaiseFm=true).`
+      ]
+    },
+    {
+      tcode: "SWDD",
+      title: `Template ${names.wfAbbrev}`,
+      actions: [
+        `Ctrl+S \u2192 Sigla ${names.wfAbbrev} + denomina\xE7\xE3o. "Erro de sistema: fun\xE7\xE3o cancelada" = falta n\xFAmero de prefixo (OOW4).`,
+        `Etapa "n\xE3o determinado" \u2192 Atividade \u2192 menu da tarefa \u203A Criar tarefa: sigla ${names.tsDisplayAbbrev}, Tipo ${names.subtype}, M\xE9todo ${names.displayMethod} \u2192 salvar \u2192 Dados adicionais \u203A Atribui\xE7\xE3o do respons\xE1vel \u203A Atualizar \u203A Tarefa geral.`,
+        `Voltar (F3 2x) \u2192 aceitar binding &${names.subtype}& \u2192 _WI_OBJECT_ID. Respons\xE1vel: Express\xE3o ("Impress\xE3o" no GUI PT) &_WF_INITIATOR&.`,
+        `Painel "Container de workflow": criar STATUS (Ref. ABAP Dictionary ${names.table}-STATUS); abrir o elemento ${names.subtype} \u2192 Caracts. \u2192 Importa\xE7\xE3o \u2714.`,
+        `Arrastar "Decis\xE3o do usu\xE1rio" abaixo da atividade: t\xEDtulo, respons\xE1vel &_WF_INITIATOR&, op\xE7\xF5es Aprovar/Rejeitar.`,
+        `Em cada resultado: Opera\xE7\xE3o de container, Elem.resultado STATUS (sem &), Express\xE3o A (aprovado) / R (rejeitado).`,
+        `Arrastar Atividade para depois da jun\xE7\xE3o \u2192 Criar tarefa ${names.tsUpdateAbbrev}, m\xE9todo ${names.updateMethod}, Processamento em background \u2714 \u2192 aceitar binding &STATUS& \u2192 STATUS e &${names.subtype}& \u2192 _WI_OBJECT_ID.`,
+        `Ctrl+F8 \u203A Independente vers\xE3o \u203A Eventos iniciais: BO ${names.subtype} / ${names.event}. Gravar o WF antes do binding; binding _EVT_OBJECT \u2192 ${names.subtype}; coluna Atv (pede ordem de customizing).`,
+        `Gravar e Ativar (Ctrl+F3).`
+      ]
+    },
+    {
+      tcode: "SWUE / SWI1 / SBWP",
+      title: "Teste",
+      actions: [
+        `SWUE: Tipo ${names.subtype}, Evento ${names.event}, chave de um documento existente${ctx.client ? ` no mandante ${ctx.client}` : ""} \u2192 Determinar receptor (WS "0 sem erros") \u2192 Gerar evento.`,
+        `SWI1 / SBWP \u203A Entrada \u203A Workflow \u2192 executar a exibi\xE7\xE3o \u2192 decidir \u2192 SE16 ${names.table}.`,
+        `Receptor achado mas nada na SWI1 \u2192 SWU3 (destino RFC WORKFLOW_LOCAL_<mandante>) ou SM58.`
+      ]
+    }
+  ];
+}
+
+// src/handlers/BoApprovalHandlers.ts
+function summarizePreflight(raw, names, opts) {
+  const blockers = [];
+  const warnings = [];
+  if (!raw.supertypeExists) blockers.push(`BO ${names.supertype} not found in TOJTB.`);
+  if (raw.supertypeExists && raw.keys.length === 0) blockers.push(`BO ${names.supertype} has no key fields in SWOTDV (VERBTYPE = K).`);
+  if (raw.subtypeExists) warnings.push(`BO ${names.subtype} already exists \u2014 SWO1 steps become "modify" instead of "create subtype".`);
+  const cdCandidates = Array.from(/* @__PURE__ */ new Set([...raw.cdFromSwec, ...raw.cdFromTcdob]));
+  const cdObject = opts.cdObject ? opts.cdObject.toUpperCase() : cdCandidates[0];
+  if (!cdObject) warnings.push("No change document object found for the main table \u2014 pass cdObject or use the raise-event FM in a save exit/BAdI.");
+  else if (!opts.cdObject && cdCandidates.length > 1) warnings.push(`Several change document objects fit (${cdCandidates.join(", ")}); using ${cdObject}.`);
+  if (opts.client) {
+    const client = opts.client.padStart(3, "0");
+    if (!raw.prefixes.some((p) => String(p.MANDT || "") === client)) {
+      warnings.push(`No workflow prefix number (T78NR/OOW4) for client ${client}: no TS/WS can be saved there until one is created.`);
+    }
+    if (!raw.rfcDests.includes(`WORKFLOW_LOCAL_${client}`)) {
+      warnings.push(`RFC destination WORKFLOW_LOCAL_${client} missing (SWU3 not done in client ${client}): the event finds its receiver but no workflow starts. Needs an admin (WF-BATCH password).`);
+    }
+  } else {
+    warnings.push("client not given: prefix number (T78NR) and SWU3 RFC destination were not checked for the GUI client.");
+  }
+  if (raw.existing.table) warnings.push(`Table ${names.table} already exists \u2014 deploy keeps it unchanged.`);
+  if (raw.existing.updateFm) warnings.push(`FM ${names.updateFm} already exists \u2014 deploy overwrites its source.`);
+  return { blockers, warnings, cdObject, cdCandidates, keys: raw.keys, existing: raw.existing };
+}
+var BoApprovalHandlers = class extends BaseHandler {
+  getTools() {
+    return [
+      {
+        name: "wf_bo_approval_scaffold",
+        description: "Scaffold a classic SAP Business Workflow for approve/reject on a Z SUBTYPE of any BOR object (e.g. BUS2012 \u2192 ZCUST_PO): change document (SWEC) raises Z<BO>.<EVENT> on save \u2192 dialog step displays the document \u2192 user decision Approve/Reject \u2192 container operation STATUS=A/R \u2192 background step writes a Z log table. Reads SWOTDV/DD03L for the BO key, suggests the change document object (SWECDOBJ/TCDOB), checks prefix numbers (T78NR) and the SWU3 RFC destination for the GUI client. mode=check: pre-flight only. mode=preview (default): pre-flight + all generated sources (Z table, update FM, optional raise-event FM, BOR method code) + ordered SAP GUI guide. mode=deploy: also creates and activates the Z table, function group and FMs via ADT (FMs activated together with their group and verified not inactive). BOR subtype (SWO1), SWEC entry, tasks and WS template (PFTC/SWDD) cannot be created through ADT \u2014 they are returned as the guide. Only the BUS2012 display preset is verified end to end; other presets are marked verified=false.",
+        annotations: { title: "Workflow: BO subtype approval scaffold" },
+        inputSchema: {
+          type: "object",
+          properties: {
+            supertype: { type: "string", description: "Standard BOR object type, e.g. BUS2012 (max 10 chars)" },
+            subtype: { type: "string", description: "Z subtype to create in SWO1, e.g. ZCUST_PO (max 10 chars)" },
+            event: { type: "string", description: "Custom event name (default ZCHANGED), e.g. POCHANGED" },
+            mode: { type: "string", description: "check | preview (default) | deploy", enum: ["check", "preview", "deploy"] },
+            client: { type: "string", description: "SAP GUI client where the workflow will run (e.g. 500). Enables the T78NR and SWU3 RFC checks." },
+            cdObject: { type: "string", description: "Override: change document object for SWEC (e.g. EINKBELEG)" },
+            package: { type: "string", description: "deploy: package ($TMP allowed)" },
+            transport: { type: "string", description: "deploy: transport request (non-$TMP)" },
+            includeRaiseFm: { type: "boolean", description: "Also generate/deploy the SAP_WAPI_CREATE_EVENT FM for a save exit/BAdI (default false; SWEC needs no code)" },
+            table: { type: "string", description: "Override: Z log table (default Z<base>_APR, max 16)" },
+            functionGroup: { type: "string", description: "Override: function group (default Z<base>_WF)" },
+            updateFm: { type: "string", description: "Override: update FM (default Z<base>_UPD_STATUS)" },
+            raiseFm: { type: "string", description: "Override: raise-event FM (default Z<base>_RAISE_EVT)" },
+            wfAbbrev: { type: "string", description: "Override: WS abbreviation (max 12)" },
+            tsDisplayAbbrev: { type: "string", description: "Override: display TS abbreviation (max 12)" },
+            tsUpdateAbbrev: { type: "string", description: "Override: background TS abbreviation (max 12)" },
+            displayFm: { type: "string", description: "Override: FM used to display the document (you complete the parameter mapping)" },
+            displayTcode: { type: "string", description: "Override: display transaction (SET PARAMETER ID + CALL TRANSACTION ... AND SKIP FIRST SCREEN)" },
+            displayParamIds: { type: "string", description: "With displayTcode: comma-separated parameter IDs in key order, e.g. RBN,GJR" }
+          },
+          required: ["supertype", "subtype"]
+        }
+      }
+    ];
+  }
+  async handle(toolName, args) {
+    switch (toolName) {
+      case "wf_bo_approval_scaffold":
+        return this.handleScaffold(args);
+      default:
+        this.fail(`Unknown tool: ${toolName}`);
+    }
+  }
+  // ─── SQL helper (datapreview/freestyle, same as abap_query) ────────────────
+  async sqlRows(sql, limit = 200) {
+    const h = this.adtclient.h;
+    const res = await this.withSession(async () => {
+      const response = await h.request("/sap/bc/adt/datapreview/freestyle", {
+        qs: { rowNumber: limit },
+        headers: { Accept: "application/*", "Content-Type": "text/plain" },
+        method: "POST",
+        body: sql
+      });
+      return (0, import_tablecontents3.parseQueryResponse)(response.body);
+    });
+    return res?.values || [];
+  }
+  async safeRows(sql) {
+    try {
+      return await this.sqlRows(sql);
+    } catch (_) {
+      return [];
+    }
+  }
+  async collectPreflight(names, includeRaise) {
+    const q = (s) => s.replace(/'/g, "''");
+    const tojtb = await this.safeRows(`SELECT name FROM tojtb WHERE name = '${q(names.supertype)}' OR name = '${q(names.subtype)}'`);
+    const has = (n) => tojtb.some((r) => String(r.NAME).toUpperCase() === n);
+    const keyRows = await this.safeRows(
+      `SELECT verb, refstruct, reffield, editorder FROM swotdv WHERE objtype = '${q(names.supertype)}' AND verbtype = 'K'`
+    );
+    keyRows.sort((a, b) => Number(a.EDITORDER || 0) - Number(b.EDITORDER || 0));
+    const keys = [];
+    for (const r of keyRows) {
+      const dd = await this.safeRows(
+        `SELECT rollname, inttype, leng FROM dd03l WHERE tabname = '${q(r.REFSTRUCT)}' AND fieldname = '${q(r.REFFIELD)}' AND as4local = 'A'`
+      );
+      keys.push({
+        verb: String(r.VERB),
+        refStruct: String(r.REFSTRUCT),
+        refField: String(r.REFFIELD),
+        rollname: dd[0]?.ROLLNAME ? String(dd[0].ROLLNAME) : void 0,
+        intType: dd[0]?.INTTYPE,
+        length: dd[0]?.LENG ? Number(dd[0].LENG) : void 0
+      });
+    }
+    const swec = await this.safeRows(`SELECT cdobjectcl FROM swecdobj WHERE objtype = '${q(names.supertype)}'`);
+    const main = mainTableOf(keys);
+    const tcdob = main ? await this.safeRows(`SELECT object FROM tcdob WHERE tabname = '${q(main)}' AND multcase = ' '`) : [];
+    const prefixes = await this.safeRows("SELECT lead_nr, sysid, mandt FROM t78nr");
+    const rfc = await this.safeRows(`SELECT rfcdest FROM rfcdes WHERE rfcdest LIKE 'WORKFLOW_LOCAL%'`);
+    const tadir = await this.safeRows(
+      `SELECT object, obj_name FROM tadir WHERE pgmid = 'R3TR' AND ( ( object = 'TABL' AND obj_name = '${q(names.table)}' ) OR ( object = 'FUGR' AND obj_name = '${q(names.functionGroup)}' ) )`
+    );
+    const fms = await this.safeRows(
+      `SELECT funcname FROM tfdir WHERE funcname = '${q(names.updateFm)}'${includeRaise ? ` OR funcname = '${q(names.raiseFm)}'` : ""}`
+    );
+    return {
+      supertypeExists: has(names.supertype),
+      subtypeExists: has(names.subtype),
+      keys,
+      cdFromSwec: Array.from(new Set(swec.map((r) => String(r.CDOBJECTCL)).filter(Boolean))),
+      cdFromTcdob: Array.from(new Set(tcdob.map((r) => String(r.OBJECT)).filter(Boolean))),
+      prefixes,
+      rfcDests: rfc.map((r) => String(r.RFCDEST)),
+      existing: {
+        table: tadir.some((r) => r.OBJECT === "TABL"),
+        functionGroup: tadir.some((r) => r.OBJECT === "FUGR"),
+        updateFm: fms.some((r) => r.FUNCNAME === names.updateFm),
+        raiseFm: fms.some((r) => r.FUNCNAME === names.raiseFm)
+      }
+    };
+  }
+  // ─── main ──────────────────────────────────────────────────────────────────
+  async handleScaffold(args) {
+    let names;
+    try {
+      names = deriveBoApprovalNames(args);
+    } catch (e) {
+      this.fail(`wf_bo_approval_scaffold: ${e.message}`);
+    }
+    const mode2 = String(args.mode || "preview");
+    const includeRaise = args.includeRaiseFm === true || args.includeRaiseFm === "true";
+    await this.notify(`wf_bo_approval_scaffold: pre-flight for ${names.supertype} \u2192 ${names.subtype}\u2026`);
+    const raw = await this.collectPreflight(names, includeRaise);
+    const pre = summarizePreflight(raw, names, { client: args.client, cdObject: args.cdObject });
+    if (mode2 === "check" || pre.blockers.length) {
+      return this.success({
+        mode: pre.blockers.length && mode2 !== "check" ? `${mode2} (stopped by blockers)` : "check",
+        names,
+        preflight: pre
+      });
+    }
+    const display = resolveDisplay(args, names.supertype);
+    const sources = {
+      [names.table]: buildApprovalTableSource(names, pre.keys),
+      [names.updateFm]: buildUpdateFmSource(names, pre.keys)
+    };
+    if (includeRaise) sources[names.raiseFm] = buildRaiseEventFmSource(names, pre.keys);
+    const borMethodsSource = buildBorMethodsSource(names, pre.keys, display);
+    const guide = buildGuiGuide(names, { cdObject: pre.cdObject, client: args.client, keys: pre.keys, display });
+    if (mode2 !== "deploy") {
+      return this.success({
+        mode: "preview",
+        names,
+        preflight: pre,
+        display,
+        sources,
+        borMethodsSource,
+        guide,
+        next: 'Call again with mode="deploy" and package (and transport) to create the table, function group and FMs; then follow the guide.'
+      });
+    }
+    const deployed = await this.deploy(args, names, pre, sources, includeRaise);
+    return this.success({
+      mode: "deploy",
+      names,
+      preflight: pre,
+      display,
+      steps: deployed.steps,
+      stillInactive: deployed.stillInactive,
+      borMethodsSource,
+      guide
+    });
+  }
+  async deploy(args, names, pre, sources, includeRaise) {
+    if (!args.package) this.fail("wf_bo_approval_scaffold(deploy): package is required ($TMP allowed).");
+    const pkg = String(args.package).toUpperCase();
+    if (pkg !== "$TMP" && !args.transport) this.fail("wf_bo_approval_scaffold(deploy): transport is required for non-$TMP packages.");
+    const transport = args.transport ? String(args.transport).toUpperCase() : void 0;
+    const objects = new ObjectHandlers(this.adtclient);
+    const source = new SourceHandlers(this.adtclient);
+    for (const h of [objects, source]) {
+      const self2 = this;
+      if (self2._notify) h.setNotify(self2._notify);
+      if (self2._elicit) h.setElicit(self2._elicit);
+    }
+    const steps = [];
+    const run = async (step, fn) => {
+      await this.notify(`wf_bo_approval_scaffold: ${step}\u2026`);
+      try {
+        const r = await fn();
+        const payload = parseToolPayload(r);
+        if (payload?.activated === false || payload?.success === false) {
+          throw new Error(JSON.stringify(payload.errors || payload.messages || payload));
+        }
+        steps.push({ step, ok: true, detail: payload?.message });
+      } catch (e) {
+        steps.push({ step, ok: false, detail: e?.message || String(e) });
+        throw new Error(`${step}: ${e?.message || e}`);
+      }
+    };
+    const fms = [names.updateFm, ...includeRaise ? [names.raiseFm] : []];
+    try {
+      if (!pre.existing.table) {
+        await run(`create table ${names.table}`, () => objects.validateAndHandle(
+          "abap_create",
+          { name: names.table, type: "TABL", description: `WF ${names.subtype}: aprovacao/rejeicao`, package: pkg, transport }
+        ));
+        await run(`write table ${names.table}`, () => source.validateAndHandle(
+          "abap_set_source",
+          { name: names.table, type: "TABL", source: sources[names.table], transport }
+        ));
+        await run(`activate table ${names.table}`, () => objects.validateAndHandle("abap_activate", { name: names.table, type: "TABL" }));
+      } else {
+        steps.push({ step: `table ${names.table} already exists \u2014 kept`, ok: true });
+      }
+      if (!pre.existing.functionGroup) {
+        await run(`create function group ${names.functionGroup}`, () => objects.validateAndHandle(
+          "abap_create",
+          { name: names.functionGroup, type: "FUGR/F", description: `WF ${names.subtype}: aprovacao`, package: pkg, transport }
+        ));
+      }
+      for (const fm of fms) {
+        const exists = fm === names.updateFm ? pre.existing.updateFm : pre.existing.raiseFm;
+        if (!exists) {
+          await run(`create FM ${fm}`, () => objects.validateAndHandle("abap_create", {
+            name: fm,
+            type: "FUGR/FF",
+            package: names.functionGroup,
+            transport,
+            description: fm === names.updateFm ? `WF ${names.subtype}: grava status em ${names.table}` : `WF ${names.subtype}: dispara ${names.event}`
+          }));
+        }
+        await run(`write FM ${fm}`, () => source.validateAndHandle(
+          "abap_set_source",
+          { name: fm, type: "FUGR/FF", fugr: names.functionGroup, source: sources[fm], transport }
+        ));
+      }
+      await this.notify("wf_bo_approval_scaffold: activating function group and FMs\u2026");
+      const groupUrl = buildObjectUrl(names.functionGroup, "FUGR/F");
+      const refs = [
+        { "adtcore:uri": groupUrl, "adtcore:type": "FUGR/F", "adtcore:name": names.functionGroup, "adtcore:parentUri": "" },
+        ...fms.map((fm) => ({
+          "adtcore:uri": buildFunctionModuleUrl(names.functionGroup, fm),
+          "adtcore:type": "FUGR/FF",
+          "adtcore:name": fm,
+          "adtcore:parentUri": groupUrl
+        }))
+      ];
+      const act = await this.withSession(() => this.adtclient.activate(refs, true));
+      if (act && act.success === false) {
+        const msgs = (act.messages || []).map((m) => m.shortText || m.objDescr || JSON.stringify(m)).join(" | ");
+        steps.push({ step: "activate function group + FMs", ok: false, detail: msgs });
+        throw new Error(`activation failed: ${msgs}`);
+      }
+      steps.push({ step: "activate function group + FMs", ok: true });
+    } catch (error2) {
+      this.fail(
+        `wf_bo_approval_scaffold(deploy) stopped: ${error2?.message || error2}
+` + steps.map((s) => `${s.ok ? "OK " : "ERR"} ${s.step}${s.detail ? ` \u2014 ${s.detail}` : ""}`).join("\n")
+      );
+    }
+    let stillInactive = [];
+    try {
+      const inactive = await this.withSession(() => this.adtclient.inactiveObjects());
+      const ours = /* @__PURE__ */ new Set([names.table, names.functionGroup, ...fms]);
+      stillInactive = (inactive || []).map((r) => String(r?.object?.["adtcore:name"] || "").toUpperCase()).filter((n) => ours.has(n));
+    } catch (e) {
+      steps.push({ step: "check inactive objects", ok: false, detail: formatError2("inactiveObjects", e) });
+    }
+    if (stillInactive.length) steps.push({ step: "objects still inactive", ok: false, detail: stillInactive.join(", ") });
+    return { steps, stillInactive };
+  }
+};
+
 // src/lib/auth.ts
 var https = __toESM(require("https"));
 var http = __toESM(require("http"));
@@ -63975,7 +64636,8 @@ function createSystemEntry(auth, elicitFn, notifyFn, samplingFn) {
     new TraceHandlers(client),
     new DdicHandlers(client),
     new BspHandlers(client),
-    new WorkflowHandlers(client)
+    new WorkflowHandlers(client),
+    new BoApprovalHandlers(client)
   ];
   for (const h of handlers) {
     h.setElicit(elicitFn);

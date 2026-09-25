@@ -1,3 +1,9 @@
+# sap-workflow-adt 0.2.0
+
+- New `wf_bo_approval_scaffold` (`BoApprovalHandlers` + `src/lib/boApprovalTemplates.ts`): approve/reject workflow on a Z subtype of any BOR object. Pre-flight (BO key from SWOTDV/DD03L, change document object from SWECDOBJ/TCDOB, prefix number T78NR, SWU3 destination `WORKFLOW_LOCAL_<client>`, existing objects), generated Z log table, update FM (MODIFY, no COMMIT, exceptions), optional `SAP_WAPI_CREATE_EVENT` FM (`commit_work = space`), BOR method code and an ordered SAP GUI guide (SWO1 → SWEC → SWDD → SWUE/SWI1). Recipe validated end to end with `BUS2012`/`ZCUST_PO` on S/4HANA; generated ABAP for a composite-key BO (`BUS2081`) activated cleanly.
+- Fix: `abap_activate` with `type=FUGR/FF` activates the function group and the FM together.
+- Tests: +19 unit tests (`boApproval.test.ts`).
+
 # sap-workflow-adt 0.1.0
 
 - New `WorkflowHandlers`: `package_create`, `msag_set_messages`, `wf_class_scaffold`.
