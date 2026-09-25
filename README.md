@@ -1,4 +1,23 @@
-# dassian-adt
+# sap-workflow-adt
+
+Fork of [dassian-adt](https://github.com/DassianInc/dassian-adt) (MIT) focused on **SAP Business Workflow** development.
+Everything from dassian-adt is kept; this fork adds:
+
+| Tool | What it does |
+|------|-------------|
+| `package_create` | Creates a package through the ADT packages API (v2 XML): top-level (software component / transport layer) or sub-package. |
+| `msag_set_messages` | Adds/replaces messages of a message class through the ADT API (lock → PUT → unlock), merge or replace mode. |
+| `wf_class_scaffold` | Generates an IF_WORKFLOW class following *ABAP Development for SAP Business Workflow* (Werner), ch. 7: GUID key, private instantiation + factories, instance management via `FIND_BY_LPOR`, data cluster persistence, `CX_BO_ERROR`/`CX_BO_TEMPORARY` exceptions with T100 texts, workflow events and an ABAP Unit include. `mode=preview` returns the sources; `mode=deploy` creates, activates and tests everything. |
+
+Fixes:
+
+- **`abap_run` / internal classrun**: every step now runs in `withSession` on a fresh session (a stateful/stateless mismatch caused bare HTTP 400s), the default temp class gets a unique name (a fixed name let an old class load run on another app server), and the classrun POST retries while a freshly activated class is not yet visible on the answering app server (`Error: Class does not implement ~main`). Wait limit: `CLASSRUN_WAIT_MS` (default 90000).
+
+Lessons encoded in the generated ABAP (see `src/lib/wfTemplates.ts`): no `*` comment lines between methods in source-based classes; `EXPORT/IMPORT ... ID` needs a variable; data cluster IDs are max 22 characters (GUID-22); never write T100/T100U directly (ADT then returns HTTP 500 for the message class).
+
+---
+
+## Original dassian-adt README
 
 MCP server for SAP ABAP development via the ADT API. Connect AI assistants to your SAP system — read, write, test, and deploy ABAP code without SAP GUI.
 

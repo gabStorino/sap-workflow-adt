@@ -428,6 +428,68 @@ ENDCLASS.`;
   }
 
   /**
+   * Start from a clean ADT session. Toggling `stateful` on a client that still carries the cookies /
+   * CSRF token of the other session type makes the next POST fail with a bare HTTP 400 — the
+   * failure mode seen with abap_run after a previous run left the client stateless.
+   */
+  protected async freshSession(stateful: boolean): Promise<void> {
+    // logout() ends the server session (commits a pending stateful activation) and clears
+    // cookies + CSRF token; login() below starts a clean one of the requested type.
+    try { await this.adtclient.logout(); } catch (_) {}
+    this.adtclient.stateful = stateful ? session_types.stateful : session_types.stateless;
+    await this.adtclient.login();
+  }
+
+  /**
+   * POST /sap/bc/adt/oo/classrun/{class} with the retries a freshly activated class needs.
+   *
+   * On multi-instance systems the class load / interface metadata reach the app server that
+   * answers the classrun request with a delay: it returns HTTP 200 with
+   * "Error: Class does not implement if_oo_adt_classrun~main" for up to a minute or two after a
+   * successful activation. Retry with backoff (CLASSRUN_WAIT_MS, default 90 s) instead of failing.
+   * A bare 400 (stale CSRF) gets one retry on a fresh stateless session.
+   */
+  /** Backoff between classrun retries (ms). Overridable in tests. */
+  protected classrunDelays: number[] = [2_000, 4_000, 8_000, 15_000, 20_000, 30_000, 30_000];
+
+  protected async postClassrun(className: string): Promise<string> {
+    const h = (this.adtclient as any).h;
+    const maxWait = Number(process.env.CLASSRUN_WAIT_MS ?? 90_000);
+    const delays = this.classrunDelays;
+    const started = Date.now();
+    let attempt = 0;
+    let retried400 = false;
+
+    for (;;) {
+      let output: string;
+      try {
+        const response = await h.request(
+          `/sap/bc/adt/oo/classrun/${className.toUpperCase()}`,
+          { method: 'POST', headers: { Accept: 'text/plain' } }
+        );
+        output = String(response.body ?? response.data ?? '');
+      } catch (e: any) {
+        if (!retried400 && parseAdtError(e).isAmbiguous400) {
+          retried400 = true;
+          await this.freshSession(false);
+          continue;
+        }
+        throw e;
+      }
+
+      const notYetVisible = output.startsWith('Error:') && /does not implement/i.test(output);
+      const delay = delays[Math.min(attempt, delays.length - 1)];
+      if (notYetVisible && Date.now() - started + delay <= maxWait) {
+        attempt++;
+        await this.notify(`classrun: ${className} not visible on the app server yet — retrying in ${delay / 1000}s…`, 'warning');
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return output;
+    }
+  }
+
+  /**
    * Create a temporary ABAP classrun, execute methodBody, delete the class, return the output.
    * Shared by any handler that needs to run arbitrary ABAP without exposing abap_run to the LLM.
    * Does NOT paginate — callers are responsible for keeping output manageable.
@@ -447,8 +509,7 @@ ENDCLASS.`;
     let classCreated = false;
     let lockHandle: string | null = null;
 
-    this.adtclient.stateful = session_types.stateful;
-    await this.adtclient.login();
+    await this.freshSession(true);
 
     let methodName = 'run';
     try {
@@ -461,10 +522,10 @@ ENDCLASS.`;
     try {
       const tryCreate = async (): Promise<boolean> => {
         try {
-          await this.adtclient.createObject(
+          await this.withSession(() => this.adtclient.createObject(
             'CLAS/OC', upperName, '$TMP', 'Temporary runner',
             '/sap/bc/adt/packages/%24tmp'
-          );
+          ));
           return true;
         } catch (e: any) {
           const m = (e?.message || '').toLowerCase();
@@ -485,29 +546,24 @@ ENDCLASS.`;
       }
       classCreated = true;
 
-      const lr = await this.adtclient.lock(classUrl);
-      lockHandle = lr.LOCK_HANDLE;
-      if (lr.CORRNR) { try { await this.classifyTask(lr.CORRNR); } catch (_) {} }
-      await this.adtclient.setObjectSource(sourceUrl, this.buildClassSource(upperName, methodBody, methodName), lockHandle);
-      await this.adtclient.unLock(classUrl, lockHandle);
-      lockHandle = null;
+      await this.withSession(async () => {
+        const lr = await this.adtclient.lock(classUrl);
+        lockHandle = lr.LOCK_HANDLE;
+        if (lr.CORRNR) { try { await this.classifyTask(lr.CORRNR); } catch (_) {} }
+        await this.adtclient.setObjectSource(sourceUrl, this.buildClassSource(upperName, methodBody, methodName), lockHandle!);
+        await this.adtclient.unLock(classUrl, lockHandle!);
+        lockHandle = null;
+      });
 
-      const activation = await this.adtclient.activate(upperName, classUrl);
+      const activation = await this.withSession(() => this.adtclient.activate(upperName, classUrl));
       if (activation?.success !== true) {
         const msgs = (activation?.messages || []).map((m: any) => m.shortText || m.objDescr).filter(Boolean).join('; ');
         throw new Error(`Activation failed: ${msgs || JSON.stringify(activation)}`);
       }
 
-      await this.adtclient.logout();
-      this.adtclient.stateful = session_types.stateless;
-      await this.adtclient.login();
-
-      const h = (this.adtclient as any).h;
-      const response = await h.request(
-        `/sap/bc/adt/oo/classrun/${upperName}`,
-        { method: 'POST', headers: { Accept: 'text/plain' } }
-      );
-      const output = String(response.body ?? response.data ?? '');
+      // End the stateful session so the activation is fully committed, then run stateless.
+      await this.freshSession(false);
+      const output = await this.postClassrun(upperName);
       if (output.startsWith('Error:') || output.startsWith('Exception:')) {
         throw new Error(`classrun returned error: ${output}`);
       }
@@ -517,8 +573,7 @@ ENDCLASS.`;
       if (lockHandle) { try { await this.adtclient.unLock(classUrl, lockHandle); } catch (_) {} }
       if (classCreated) {
         try {
-          this.adtclient.stateful = session_types.stateful;
-          await this.adtclient.login();
+          await this.freshSession(true);
           const dl = await this.adtclient.lock(classUrl);
           if (dl.CORRNR) { try { await this.classifyTask(dl.CORRNR); } catch (_) {} }
           await this.adtclient.deleteObject(classUrl, dl.LOCK_HANDLE);

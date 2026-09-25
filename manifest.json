@@ -1,13 +1,12 @@
 {
   "manifest_version": "0.2",
-  "name": "dassian-adt",
-  "version": "2.0.0",
-  "display_name": "Dassian ADT — SAP ABAP Development",
-  "description": "Connect Claude to SAP systems via ADT API. Read, write, test, and deploy ABAP code without SAP GUI.",
+  "name": "sap-workflow-adt",
+  "version": "0.1.0",
+  "display_name": "SAP Workflow ADT — ABAP + SAP Business Workflow",
+  "description": "Fork of dassian-adt with extra tools for SAP Business Workflow development (package_create, msag_set_messages, wf_class_scaffold).",
   "author": {
-    "name": "Dassian Inc.",
-    "email": "pmcfarling@dassian.com",
-    "url": "https://github.com/DassianInc/dassian-adt"
+    "name": "Gabriela Storino",
+    "email": "gabriela.storino.ig@gmail.com"
   },
   "server": {
     "type": "node",
@@ -56,24 +55,85 @@
     }
   },
   "tools": [
-    { "name": "abap_get_source", "description": "Read ABAP source code" },
-    { "name": "abap_get_class_include", "description": "Read ABAP class include source code" },
-    { "name": "abap_set_source", "description": "Write ABAP source code" },
-    { "name": "abap_create", "description": "Create ABAP objects" },
-    { "name": "abap_delete", "description": "Delete ABAP objects" },
-    { "name": "abap_activate", "description": "Activate ABAP objects" },
-    { "name": "abap_search", "description": "Search for ABAP objects" },
-    { "name": "abap_run", "description": "Run ABAP code and capture output" },
-    { "name": "abap_table", "description": "Read SAP tables and CDS views" },
-    { "name": "abap_query", "description": "Execute SQL queries" },
-    { "name": "transport_create", "description": "Create transport requests" },
-    { "name": "transport_release", "description": "Release transports" },
-    { "name": "abap_syntax_check", "description": "Check ABAP syntax" },
-    { "name": "abap_atc_run", "description": "Run ATC quality checks" },
-    { "name": "bsp_read_file", "description": "Read/list files in a BSP / UI5 application" }
+    {
+      "name": "abap_get_source",
+      "description": "Read ABAP source code"
+    },
+    {
+      "name": "abap_get_class_include",
+      "description": "Read ABAP class include source code"
+    },
+    {
+      "name": "abap_set_source",
+      "description": "Write ABAP source code"
+    },
+    {
+      "name": "abap_create",
+      "description": "Create ABAP objects"
+    },
+    {
+      "name": "abap_delete",
+      "description": "Delete ABAP objects"
+    },
+    {
+      "name": "abap_activate",
+      "description": "Activate ABAP objects"
+    },
+    {
+      "name": "abap_search",
+      "description": "Search for ABAP objects"
+    },
+    {
+      "name": "abap_run",
+      "description": "Run ABAP code and capture output"
+    },
+    {
+      "name": "abap_table",
+      "description": "Read SAP tables and CDS views"
+    },
+    {
+      "name": "abap_query",
+      "description": "Execute SQL queries"
+    },
+    {
+      "name": "transport_create",
+      "description": "Create transport requests"
+    },
+    {
+      "name": "transport_release",
+      "description": "Release transports"
+    },
+    {
+      "name": "abap_syntax_check",
+      "description": "Check ABAP syntax"
+    },
+    {
+      "name": "abap_atc_run",
+      "description": "Run ATC quality checks"
+    },
+    {
+      "name": "bsp_read_file",
+      "description": "Read/list files in a BSP / UI5 application"
+    },
+    {
+      "name": "package_create",
+      "description": "Create ABAP packages"
+    },
+    {
+      "name": "msag_set_messages",
+      "description": "Write message class messages"
+    },
+    {
+      "name": "wf_class_scaffold",
+      "description": "Generate IF_WORKFLOW class + CX_BO_* exceptions"
+    }
   ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }

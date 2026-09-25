@@ -32,6 +32,7 @@ import { RapHandlers }       from './handlers/RapHandlers.js';
 import { TraceHandlers }     from './handlers/TraceHandlers.js';
 import { DdicHandlers }      from './handlers/DdicHandlers.js';
 import { BspHandlers }       from './handlers/BspHandlers.js';
+import { WorkflowHandlers }  from './handlers/WorkflowHandlers.js';
 import { resolveSystemConfigs, AuthConfig } from './lib/auth.js';
 import { logToolError, extractRawResponse, recordRawHttpFailure, consumeRawHttpFailure } from './lib/logger.js';
 import { parseAdtError } from './lib/errors.js';
@@ -171,6 +172,7 @@ function createSystemEntry(
     new TraceHandlers(client),
     new DdicHandlers(client),
     new BspHandlers(client),
+    new WorkflowHandlers(client),
   ];
 
   for (const h of handlers) {
@@ -237,7 +239,7 @@ export class AbapAdtServer extends Server {
 
   constructor(resolved: [AuthConfig[], string]) {
     super(
-      { name: 'dassian-adt', version: '2.0.0' },
+      { name: 'sap-workflow-adt', version: '0.1.0' },
       { capabilities: { tools: {}, logging: {}, prompts: {} } }
     );
 

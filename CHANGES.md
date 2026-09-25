@@ -1,3 +1,10 @@
+# sap-workflow-adt 0.1.0
+
+- New `WorkflowHandlers`: `package_create`, `msag_set_messages`, `wf_class_scaffold`.
+- New `src/lib/wfTemplates.ts` (pure generators, unit tested; generated sources verified on S/4HANA: 5/5 ABAP Unit tests green).
+- `abap_run` and `runClassrun`: fresh sessions via `freshSession()`, `withSession` around create/lock-write-unlock/activate, unique default class name, `postClassrun()` with backoff retries.
+- Tests: +34 unit tests (wfTemplates, workflowHandlers, classrunRetry).
+
 # What Changed
 
 Based on the original MCP server by Mario Andreschak. This fork focuses on letting the AI do real development work — not just read code, but write it, activate it, manage transports, and clean up after itself. The changes below address what broke when we started using it that way.

@@ -1,6 +1,5 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { BaseHandler } from './BaseHandler.js';
-import { session_types } from 'abap-adt-api';
 import type { ToolDefinition } from '../types/tools.js';
 import { formatError } from '../lib/errors.js';
 import { randomUUID } from 'crypto';
@@ -71,7 +70,7 @@ export class RunHandlers extends BaseHandler {
             },
             className: {
               type: 'string',
-              description: 'Optional class name for the temp class (default: ZCL_TMP_ADT_RUN). Must start with Z. Will be deleted after run. Change this if you get "already exists" errors from a prior failed run.'
+              description: 'Optional class name for the temp class (default: ZCL_TMP_ADT_RUN_<unique suffix>). Must start with Z. Will be deleted after run.'
             },
             interfaceMethod: {
               type: 'string',
@@ -209,7 +208,11 @@ export class RunHandlers extends BaseHandler {
       this.fail('abap_run: methodBody is required — provide the ABAP code to run as the methodBody parameter.');
     }
 
-    const className     = (args.className || 'ZCL_TMP_ADT_RUN').toUpperCase();
+    // Default name gets a unique suffix: reusing one fixed name let a stale class load from a previous
+    // run be executed on another app server (old output returned for new code).
+    const className = args.className
+      ? String(args.className).toUpperCase()
+      : `ZCL_TMP_ADT_RUN_${Date.now().toString(36).slice(-6)}`.toUpperCase().slice(0, 30);
     let actualClassName = className;
     let classUrl        = `/sap/bc/adt/oo/classes/${className.toLowerCase()}`;
     let sourceUrl       = `${classUrl}/source/main`;
@@ -221,8 +224,7 @@ export class RunHandlers extends BaseHandler {
     try {
       // Ensure stateful session — must be established before auto-detecting the interface method,
       // otherwise getObjectSource may fail silently and fall back to 'run' (wrong on 2024+ systems).
-      this.adtclient.stateful = session_types.stateful;
-      await this.adtclient.login();
+      await this.freshSession(true);
 
       // Auto-detect the correct interface method for this system by reading IF_OO_ADT_CLASSRUN.
       // Older systems (≤2023) use ~run; newer systems (2024+) use ~main.
@@ -245,10 +247,10 @@ export class RunHandlers extends BaseHandler {
       // If that also fails, try incrementing the name suffix (ZCL_TMP_ADT_RUN_2, _3, ...) up to 5 times.
       const tryCreate = async (name: string): Promise<boolean> => {
         try {
-          await this.adtclient.createObject(
+          await this.withSession(() => this.adtclient.createObject(
             'CLAS/OC', name, '$TMP', 'Temporary ADT runner class',
             '/sap/bc/adt/packages/%24tmp', undefined, undefined
-          );
+          ));
           return true;
         } catch (e: any) {
           const m = (e?.message || '').toLowerCase();
@@ -289,22 +291,22 @@ export class RunHandlers extends BaseHandler {
       sourceUrl = `${classUrl}/source/main`;
       classCreated = true;
 
-      // Lock → write source → unlock
-      const lockResult = await this.adtclient.lock(classUrl);
-      lockHandle = lockResult.LOCK_HANDLE;
-      // Classify any auto-created workbench task as Correction — prevents orphaned Unclassified tasks.
-      if (lockResult.CORRNR) {
-        try { await this.classifyTask(lockResult.CORRNR); } catch (_) {}
-      }
-
+      // Lock → write source → unlock, in ONE withSession block (see CLAUDE.md invariant)
       const source = this.buildClassSource(actualClassName, args.methodBody, methodName);
-      await this.adtclient.setObjectSource(sourceUrl, source, lockHandle);
-
-      await this.adtclient.unLock(classUrl, lockHandle);
-      lockHandle = null;
+      await this.withSession(async () => {
+        const lockResult = await this.adtclient.lock(classUrl);
+        lockHandle = lockResult.LOCK_HANDLE;
+        // Classify any auto-created workbench task as Correction — prevents orphaned Unclassified tasks.
+        if (lockResult.CORRNR) {
+          try { await this.classifyTask(lockResult.CORRNR); } catch (_) {}
+        }
+        await this.adtclient.setObjectSource(sourceUrl, source, lockHandle!);
+        await this.adtclient.unLock(classUrl, lockHandle!);
+        lockHandle = null;
+      });
 
       // Activate — if it fails because the method name is wrong for this release, surface a clear hint
-      const activationResult = await this.adtclient.activate(actualClassName, classUrl);
+      const activationResult = await this.withSession(() => this.adtclient.activate(actualClassName, classUrl));
       // Surface the raw activation result so callers can diagnose unexpected shapes (e.g. release differences)
       const activationSucceeded = activationResult?.success === true;
       if (!activationSucceeded) {
@@ -330,21 +332,14 @@ export class RunHandlers extends BaseHandler {
 
       // End the stateful session before classrun — on some systems (e.g. D25/759), activation is only
       // fully committed once the session closes. classrun on an in-session activation sees "not implemented".
-      await this.adtclient.logout();
       // Re-login stateless to get a fresh CSRF token for the classrun POST.
-      this.adtclient.stateful = session_types.stateless;
-      await this.adtclient.login();
+      await this.freshSession(false);
 
-      // Call classrun via the underlying HTTP client directly so we can set Accept: text/plain.
-      // The library's runClass() sends no Accept header, which causes silent failures on some releases.
-      const h = (this.adtclient as any).h;
+      // postClassrun sets Accept: text/plain, retries while the new class is not yet visible on the
+      // answering app server ("does not implement ~main") and once on a stale-CSRF 400.
       let output: any;
       try {
-        const response = await h.request(
-          `/sap/bc/adt/oo/classrun/${actualClassName.toUpperCase()}`,
-          { method: 'POST', headers: { Accept: 'text/plain' } }
-        );
-        output = response.body ?? response.data ?? '';
+        output = await this.postClassrun(actualClassName);
       } catch (runError: any) {
         const msg = runError?.message || '';
         const status = runError?.response?.status;
@@ -411,8 +406,7 @@ export class RunHandlers extends BaseHandler {
       // Re-login first — the session may be in a bad state after an error.
       if (classCreated && !args.keepClass) {
         try {
-          this.adtclient.stateful = session_types.stateful;
-          await this.adtclient.login();
+          await this.freshSession(true);
           const deleteLock = await this.adtclient.lock(classUrl);
           if (deleteLock.CORRNR) { try { await this.classifyTask(deleteLock.CORRNR); } catch (_) {} }
           await this.adtclient.deleteObject(classUrl, deleteLock.LOCK_HANDLE);
