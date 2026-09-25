@@ -15,6 +15,93 @@ Fixes:
 - **`abap_activate` with `type=FUGR/FF`**: activates the function group *and* the function module in one request. Activating only the group could report success while the FM stayed inactive.
 - **`abap_run` / internal classrun**: every step now runs in `withSession` on a fresh session (a stateful/stateless mismatch caused bare HTTP 400s), the default temp class gets a unique name (a fixed name let an old class load run on another app server), and the classrun POST retries while a freshly activated class is not yet visible on the answering app server (`Error: Class does not implement ~main`). Wait limit: `CLASSRUN_WAIT_MS` (default 90000).
 
+## Install (this fork)
+
+```bash
+git clone https://github.com/gabStorino/sap-workflow-adt.git
+cd sap-workflow-adt
+npm install          # use install, not ci, on Windows (optional macOS-only deps)
+npm test
+npm run build        # dist/
+npm run bundle       # bundle/sap-workflow-adt.js, the file Claude Desktop runs
+```
+
+Step-by-step guide in Portuguese: [docs/INSTALACAO.md](docs/INSTALACAO.md).
+
+## `wf_bo_approval_scaffold`
+
+Builds the classic "custom BO + event + approve/reject + background update" workflow for **any BOR object**, as a Z subtype of the standard one.
+
+```
+document changed and saved
+  └─ SWEC (change document) raises Z<BO>.<EVENT>
+       └─ WS template started by the event
+            ├─ dialog step: DISPLAYNEW (show the document) → workflow initiator
+            ├─ user decision: Approve / Reject
+            │    ├─ container operation STATUS = 'A'
+            │    └─ container operation STATUS = 'R'
+            ├─ (join) background step: UPDATETABLE → update FM → Z log table
+            └─ end
+```
+
+### Parameters
+
+| Parameter | Required | Meaning |
+|---|---|---|
+| `supertype` | yes | Standard BOR type, e.g. `BUS2012` |
+| `subtype` | yes | Z subtype to create in SWO1, e.g. `ZCUST_PO` (max 10) |
+| `event` | | Custom event (default `ZCHANGED`) |
+| `mode` | | `check`, `preview` (default) or `deploy` |
+| `client` | | Client where the workflow runs (SAP GUI). Enables the T78NR and SWU3 checks |
+| `cdObject` | | Change document object for SWEC (default: suggested from SWECDOBJ/TCDOB) |
+| `package` / `transport` | deploy | `$TMP` needs no transport |
+| `includeRaiseFm` | | Also generate an FM that raises the event with `SAP_WAPI_CREATE_EVENT` (for a save exit/BAdI instead of SWEC) |
+| `displayFm` / `displayTcode` + `displayParamIds` | | How to display the document when there is no preset |
+| `table`, `functionGroup`, `updateFm`, `raiseFm`, `wfAbbrev`, `tsDisplayAbbrev`, `tsUpdateAbbrev` | | Name overrides (defaults derived from the subtype) |
+
+### Modes
+
+- **`check`**: pre-flight only.
+  - Reads the BO key fields (SWOTDV + DD03L, composite keys supported).
+  - Suggests the change document object.
+  - Checks that the target client has a workflow prefix number (T78NR/OOW4) and the SWU3 RFC destination `WORKFLOW_LOCAL_<client>`.
+  - Reports objects that already exist.
+- **`preview`**: pre-flight plus every generated source.
+  - Z log table (DDL), update FM (`MODIFY`, no `COMMIT WORK`, exceptions) and the optional raise-event FM.
+  - BOR method code to paste in SWO1.
+  - Ordered SAP GUI guide: SWO1 → SWEC → SWDD → SWUE/SWI1.
+- **`deploy`**: `preview` plus, through ADT:
+  - creates and activates the Z table, function group and FMs;
+  - checks that nothing is left inactive.
+
+The BOR subtype (SWO1), the SWEC entry, the tasks and the WS template (PFTC/SWDD) have no ADT API. They are returned as the GUI guide, to be done by hand or by an assistant driving SAP GUI.
+
+### Example
+
+```json
+{ "supertype": "BUS2012", "subtype": "ZCUST_PO", "event": "POCHANGED", "client": "500", "mode": "check" }
+```
+
+Then `mode: "preview"` to review the code, and `mode: "deploy"` with `package: "$TMP"`.
+
+### Display presets
+
+| BO | Display | Status |
+|---|---|---|
+| `BUS2012` Purchase order | FM `ME_DISPLAY_PURCHASE_DOCUMENT` | verified end to end |
+| `BUS2105` Purchase requisition | `ME53N` (param `BAN`) | not verified |
+| `BUS2032` Sales order | `VA03` (param `AUN`) | not verified |
+| `BUS1001006` Material | `MM03` (param `MAT`) | not verified |
+| `BUS2081` Supplier invoice | `MIR4` (params `RBN`, `GJR`) | not verified; generated table/FMs for its composite key activate cleanly |
+
+Any other BO gets a `TODO` in the display method unless you pass `displayFm` or `displayTcode`.
+
+### Known blockers (what the pre-flight warns about)
+
+- **No prefix number for the client (T78NR)**: no task or workflow can be saved. Create one in OOW4.
+- **SWU3 not done (no `WORKFLOW_LOCAL_<client>`)**: the event finds its receiver in SWUE, but no workflow starts. Needs an administrator, because it sets the WF-BATCH password.
+- **Delegation**: only one per supertype exists in the whole system. The workflow does not need it, so do not create it on a shared system.
+
 Lessons encoded in the generated ABAP (see `src/lib/wfTemplates.ts`): no `*` comment lines between methods in source-based classes; `EXPORT/IMPORT ... ID` needs a variable; data cluster IDs are max 22 characters (GUID-22); never write T100/T100U directly (ADT then returns HTTP 500 for the message class).
 
 ---
