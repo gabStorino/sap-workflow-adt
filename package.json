@@ -14,7 +14,8 @@
     "build": "tsc -p tsconfig.json",
     "deploy:azure": "scripts/deploy-azure.sh",
     "start": "node ./dist/index.js",
-    "dev": "npx @modelcontextprotocol/inspector ./dist/index.js"
+    "dev": "npx @modelcontextprotocol/inspector ./dist/index.js",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=cjs --outfile=bundle/sap-workflow-adt.js"
   },
   "keywords": [
     "sap",
@@ -44,6 +45,7 @@
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
+    "esbuild": "^0.24.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.2.5"
   }
