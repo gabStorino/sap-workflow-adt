@@ -41,8 +41,8 @@ const TYPE_PATHS: Record<string, string> = {
   'DOMA/DD':  '/sap/bc/adt/ddic/domains',
 
   // Access control lists
-  'DCLS':     '/sap/bc/adt/dcls',
-  'DCLS/DL':  '/sap/bc/adt/dcls',
+  'DCLS':     '/sap/bc/adt/acm/dcl/sources',
+  'DCLS/DL':  '/sap/bc/adt/acm/dcl/sources',
 
   // RAP behavior definitions
   'BDEF':     '/sap/bc/adt/bo/behaviordefinitions',

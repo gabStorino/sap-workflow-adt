@@ -101,7 +101,7 @@ describe('buildObjectUrl', () => {
 
   // Access control
   it('DCLS/DL', () => {
-    expect(buildObjectUrl('ZDCLS', 'DCLS/DL')).toBe('/sap/bc/adt/dcls/zdcls');
+    expect(buildObjectUrl('ZDCLS', 'DCLS/DL')).toBe('/sap/bc/adt/acm/dcl/sources/zdcls');
   });
 
   // RAP / OData
