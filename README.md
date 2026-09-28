@@ -9,11 +9,13 @@ Everything from dassian-adt is kept; this fork adds:
 | `msag_set_messages` | Adds/replaces messages of a message class through the ADT API (lock → PUT → unlock), merge or replace mode. |
 | `wf_class_scaffold` | Generates an IF_WORKFLOW class following *ABAP Development for SAP Business Workflow* (Werner), ch. 7: GUID key, private instantiation + factories, instance management via `FIND_BY_LPOR`, data cluster persistence, `CX_BO_ERROR`/`CX_BO_TEMPORARY` exceptions with T100 texts, workflow events and an ABAP Unit include. `mode=preview` returns the sources; `mode=deploy` creates, activates and tests everything. |
 | `wf_bo_approval_scaffold` | Approve/reject workflow on a **Z subtype of any BOR object** (e.g. `BUS2012` → `ZCUST_PO`): the change document (SWEC) raises the Z event on save → dialog step displays the document → user decision → container operation `STATUS = A/R` → background step writes a Z log table. Reads the BO key (SWOTDV/DD03L, composite keys supported), suggests the change document object (SWECDOBJ/TCDOB) and checks the workflow prefix number (T78NR) and the SWU3 RFC destination for the GUI client. `mode=check` = pre-flight; `mode=preview` = sources + BOR method code + SAP GUI guide; `mode=deploy` also creates and activates the Z table, function group and FMs. SWO1, SWEC and PFTC/SWDD have no ADT API, so they come back as an ordered GUI guide. Display preset verified end to end only for `BUS2012`. |
+| `rap_bo_scaffold` | Managed **RAP Business Object from an existing DDIC table**: CDS interface (root) and projection view entities, behavior definitions for both, an empty behavior pool class, a service definition and an optional draft table. Field names come from DD03L and are beautified to UpperCamelCase; CURR/QUAN fields get `@Semantics.amount.currencyCode` / `@Semantics.quantity.unitOfMeasure` from DD03L-REFFIELD. `mode=check` = pre-flight; `mode=preview` = sources + guide; `mode=deploy` creates and activates everything in RAP dependency order. The service binding is not created (manual step in ADT, then `rap_publish_binding`). Verified end to end with `SFLIGHT` up to the Fiori Elements preview. |
 
 Fixes:
 
 - **`abap_activate` with `type=FUGR/FF`**: activates the function group *and* the function module in one request. Activating only the group could report success while the FM stayed inactive.
 - **`abap_run` / internal classrun**: every step now runs in `withSession` on a fresh session (a stateful/stateless mismatch caused bare HTTP 400s), the default temp class gets a unique name (a fixed name let an old class load run on another app server), and the classrun POST retries while a freshly activated class is not yet visible on the answering app server (`Error: Class does not implement ~main`). Wait limit: `CLASSRUN_WAIT_MS` (default 90000).
+- **`rap_binding_details` with OData V4 bindings**: the underlying library only understood V2 bindings and failed with `Cannot destructure property 'query' of 'queries[index]'`. V4 bindings are now read directly and return the service URL (relative and full), the service version and the entity sets.
 
 ## Install (this fork)
 
@@ -103,6 +105,71 @@ Any other BO gets a `TODO` in the display method unless you pass `displayFm` or 
 - **Delegation**: only one per supertype exists in the whole system. The workflow does not need it, so do not create it on a shared system.
 
 Lessons encoded in the generated ABAP (see `src/lib/wfTemplates.ts`): no `*` comment lines between methods in source-based classes; `EXPORT/IMPORT ... ID` needs a variable; data cluster IDs are max 22 characters (GUID-22); never write T100/T100U directly (ADT then returns HTTP 500 for the message class).
+
+## `rap_bo_scaffold`
+
+Builds a complete **managed RAP Business Object** (no custom logic) on top of an existing DDIC table.
+
+```
+DDIC table (e.g. SFLIGHT)
+  └─ ZI_<name>   CDS interface view entity (root)      + behavior definition (managed, persistent table, mapping)
+       └─ ZBP_<name>  behavior pool class (empty: the framework does create/update/delete)
+       └─ ZC_<name>   CDS projection view entity (UI)  + projection behavior definition (use create/update/delete)
+            └─ ZSD_<name>  service definition
+                 └─ ZUI_<name>_O4  service binding  ← manual step in ADT, then rap_publish_binding
+```
+
+### Parameters
+
+| Parameter | Required | Meaning |
+|---|---|---|
+| `table` | yes | Source DDIC table, e.g. `ZCUSTORDER` or `SFLIGHT` |
+| `mode` | | `check`, `preview` (default) or `deploy` |
+| `name` | | Base name for the artifacts (default: table name without its Z/Y prefix) |
+| `description` | | Short text on every generated object (default `RAP BO for <table>`) |
+| `draft` | | Add draft handling (draft table + draft actions). Default `false`; see caveats |
+| `serviceVersion` | | `V4` (default) or `V2`. Only affects the binding name and the guide |
+| `package` / `transport` | deploy | `$TMP` needs no transport |
+| `interfaceView`, `projectionView`, `behaviorPoolClass`, `serviceDefinition`, `serviceBinding`, `draftTable` | | Name overrides (defaults `ZI_`, `ZC_`, `ZBP_`, `ZSD_`, `ZUI_..._O4`, `<table>D`) |
+
+### Modes
+
+- **`check`**: pre-flight only.
+  - Reads the table fields from DD03L (keys, data element, `DATATYPE`, `REFFIELD`); `MANDT` is dropped.
+  - Blocks if the table has no key besides `MANDT`.
+  - Reports which objects already exist (DDLS and BDEF are checked separately in TADIR, since they share the name).
+  - A failed DD03L query (connection, TLS, authorization) is reported as a query error, not as "table not found".
+- **`preview`**: pre-flight plus every generated source and the guide of manual steps.
+- **`deploy`**: `preview` plus, through ADT, creates, writes and activates in this order: interface view → [draft table] → root behavior definition → behavior pool class → projection view → projection behavior definition → service definition. The root BDEF must be active before the class, or SAP rejects the class with "no behavior definition for <view>". Re-running `deploy` overwrites the sources of objects that already exist.
+
+### Example
+
+```json
+{ "table": "SFLIGHT", "mode": "check" }
+```
+
+Then `mode: "preview"` to review the sources, and `mode: "deploy"` with `package: "$TMP"`. After the deploy:
+
+1. In ADT, right-click `ZSD_<name>` → **New Service Binding**, name `ZUI_<name>_O4`, type **OData V4 - UI**, and activate it.
+2. `rap_publish_binding` with `name: "ZUI_<name>_O4"`, `version: "0001"`, `action: "publish"`.
+3. `rap_binding_details` with `name: "ZUI_<name>_O4"` returns the service URL and entity sets.
+4. Preview the Fiori Elements app from the binding in ADT.
+
+### What is deliberately not generated
+
+Each item below failed on a real system and was removed. Add it back by hand when your release or scenario needs it.
+
+- **`strict` / `strict(N)`** in the behavior definitions: rejected by the test system's BDEF parser in every form tried.
+- **`provider contract transactional_query`** in the projection view: rejected with `Unexpected word "provider"`.
+- **`authorization master ( instance )`**: it requires a `get_instance_authorizations` handler, and the behavior pool is generated empty. Activation does not catch this; the first read from Fiori dumps with `CX_SADL_DUMP_APPL_MODEL_ERROR` (`CX_RAP_HANDLER_NOT_IMPLEMENTED`, method `AUTHORITY_CHECK`). Add the clause together with the handler when you implement authorization.
+- **`@Semantics.currencyCode: true`** on the currency field itself: classic CDS view syntax, rejected on view entities. Only the amount/quantity field is annotated.
+
+### Caveats
+
+- **The BO writes to the source table.** Create, update and delete from the app go straight to that table. On a standard table (e.g. `SFLIGHT`) remove `create; update; delete;` from both behavior definitions if you only want to read.
+- **No authorization checks and no DCL.** The interface view has `@AccessControl.authorizationCheck: #CHECK` but no access control is generated.
+- **Minimal UI.** Only `@UI.lineItem` / `@UI.identification` per field; no selection fields, facets or value helps.
+- **Draft (`draft: true`) is not verified end to end.** The draft table is a best-effort starting point; check its technical fields against your release.
 
 ---
 
