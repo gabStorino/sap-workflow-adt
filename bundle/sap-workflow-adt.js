@@ -8797,7 +8797,7 @@ var require_XMLParser = __commonJS({
     var OrderedObjParser = require_OrderedObjParser();
     var { prettify } = require_node2json();
     var validator = require_validator();
-    var XMLParser = class {
+    var XMLParser2 = class {
       constructor(options) {
         this.externalEntities = {};
         this.options = buildOptions(options);
@@ -8844,7 +8844,7 @@ var require_XMLParser = __commonJS({
         }
       }
     };
-    module2.exports = XMLParser;
+    module2.exports = XMLParser2;
   }
 });
 
@@ -9232,10 +9232,10 @@ var require_fxp = __commonJS({
   "node_modules/fast-xml-parser/src/fxp.js"(exports2, module2) {
     "use strict";
     var validator = require_validator();
-    var XMLParser = require_XMLParser();
+    var XMLParser2 = require_XMLParser();
     var XMLBuilder = require_json2xml();
     module2.exports = {
-      XMLParser,
+      XMLParser: XMLParser2,
       XMLValidator: validator,
       XMLBuilder
     };
@@ -39699,7 +39699,7 @@ var require_tablecontents = __commonJS({
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.servicePreviewUrl = exports2.parseBindingDetails = exports2.decodeQueryResult = exports2.extractBindingLinks = exports2.parseServiceBinding = exports2.TypeKinds = void 0;
-    exports2.parseQueryResponse = parseQueryResponse4;
+    exports2.parseQueryResponse = parseQueryResponse5;
     exports2.tableContents = tableContents;
     exports2.runQuery = runQuery;
     exports2.bindingDetails = bindingDetails;
@@ -39818,7 +39818,7 @@ var require_tablecontents = __commonJS({
       const meta3 = { name, type, description, keyAttribute, colType, isKeyFigure, length };
       return { values, meta: meta3 };
     };
-    function parseQueryResponse4(body) {
+    function parseQueryResponse5(body) {
       const raw = (0, utilities_1.fullParse)(body, { removeNSPrefix: true, parseTagValue: false });
       const fields = (0, utilities_1.xmlArray)(raw, "tableData", "columns").map(parseColumn);
       const columns = fields.map((c) => c.meta);
@@ -39865,7 +39865,7 @@ var require_tablecontents = __commonJS({
     async function tableContents(h, ddicEntityName, rowNumber = 100, decode3 = true, sqlQuery = "") {
       const qs = { rowNumber, ddicEntityName };
       const response = await h.request(`/sap/bc/adt/datapreview/ddic`, { qs, headers: { Accept: "application/*" }, method: "POST", body: sqlQuery });
-      const queryResult = parseQueryResponse4(response.body);
+      const queryResult = parseQueryResponse5(response.body);
       if (decode3)
         return (0, exports2.decodeQueryResult)(queryResult);
       return queryResult;
@@ -39873,7 +39873,7 @@ var require_tablecontents = __commonJS({
     async function runQuery(h, sqlQuery, rowNumber = 100, decode3 = true) {
       const qs = { rowNumber };
       const response = await h.request(`/sap/bc/adt/datapreview/freestyle`, { qs, headers: { Accept: "application/*" }, method: "POST", body: sqlQuery });
-      const queryResult = parseQueryResponse4(response.body);
+      const queryResult = parseQueryResponse5(response.body);
       if (decode3)
         return (0, exports2.decodeQueryResult)(queryResult);
       return queryResult;
@@ -59256,8 +59256,8 @@ out->write( 'OK' ).
           qs: { method: "activate", preauditRequested: true }
         })
       );
-      const { XMLParser } = await Promise.resolve().then(() => __toESM(require_fxp()));
-      const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", removeNSPrefix: true });
+      const { XMLParser: XMLParser2 } = await Promise.resolve().then(() => __toESM(require_fxp()));
+      const parser = new XMLParser2({ ignoreAttributes: false, attributeNamePrefix: "@_", removeNSPrefix: true });
       const parsed = parser.parse(rawResp.body || "");
       const msgs = [];
       const chkl = parsed?.messages;
@@ -61534,8 +61534,8 @@ var SystemHandlers = class extends BaseHandler {
           headers: { Accept: "application/atom+xml;type=feed" }
         })
       );
-      const { XMLParser } = await Promise.resolve().then(() => __toESM(require_fxp()));
-      const parser = new XMLParser({
+      const { XMLParser: XMLParser2 } = await Promise.resolve().then(() => __toESM(require_fxp()));
+      const parser = new XMLParser2({
         ignoreAttributes: false,
         attributeNamePrefix: "@_",
         removeNSPrefix: true,
@@ -61789,6 +61789,7 @@ var TestHandlers = class extends BaseHandler {
 
 // src/handlers/RapHandlers.ts
 var import_abap_adt_api3 = __toESM(require_build());
+var import_fast_xml_parser = __toESM(require_fxp());
 var RapHandlers = class extends BaseHandler {
   getTools() {
     return [
@@ -61830,6 +61831,31 @@ var RapHandlers = class extends BaseHandler {
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
     }
   }
+  // The abap-adt-api library's bindingDetails()/extractBindingLinks() only understand OData V2
+  // bindings: extractBindingLinks() filters binding.links for rel === ".../categories/odatav2"
+  // and, finding nothing for a V4 binding, returns [] — then bindingDetails() destructures
+  // queries[0] and crashes with "Cannot destructure property 'query' of 'queries[index]' as it
+  // is undefined". Found live testing rap_bo_scaffold's OData V4 output. Fixed by handling the
+  // V4 "serviceGroup" response ourselves and only delegating to the library for real V2 bindings.
+  parseODataV4ServiceGroup(xml) {
+    const parser = new import_fast_xml_parser.XMLParser({ removeNSPrefix: true, ignoreAttributes: false, attributeNamePrefix: "@_" });
+    const doc = parser.parse(xml || "");
+    const group = doc?.serviceGroup;
+    if (!group) return { services: [] };
+    const arr = (v) => v === void 0 ? [] : Array.isArray(v) ? v : [v];
+    const services = arr(group.services).map((svc) => {
+      const info = svc.serviceInformation;
+      const collections = arr(info?.collection).map((c) => c["@_name"]).filter(Boolean);
+      return {
+        serviceId: svc["@_serviceId"],
+        serviceVersion: svc["@_serviceVersion"],
+        serviceUrl: svc["@_serviceUrl"],
+        annotationUrl: svc["@_annotationUrl"] || void 0,
+        entitySets: collections
+      };
+    });
+    return { serviceUrlPrefix: group["@_serviceUrlPrefix"], services };
+  }
   async handleBindingDetails(args) {
     const encoded = args.name.replace(/\//g, "%2f").toLowerCase();
     const bindingUrl = `/sap/bc/adt/businessservices/bindings/${encoded}`;
@@ -61839,10 +61865,31 @@ var RapHandlers = class extends BaseHandler {
         () => h.request(bindingUrl, { headers: { Accept: "application/*" } })
       );
       const binding = (0, import_abap_adt_api3.parseServiceBinding)(response.body || "");
-      const details = await this.withSession(
-        () => this.adtclient.bindingDetails(binding, args.index ?? 0)
-      );
-      return this.success({ name: args.name, ...details });
+      const idx = args.index ?? 0;
+      const service = binding.services?.[idx];
+      if (!service) this.fail(`rap_binding_details(${args.name}): no service at index ${idx} in this binding (it has ${binding.services?.length ?? 0}).`);
+      const v4Link = binding.links.find((l) => l.rel === "http://www.sap.com/categories/odatav4");
+      const v2Link = binding.links.find((l) => l.rel === "http://www.sap.com/categories/odatav2");
+      const baseUrl = String(h.baseURL || "").replace(/\/$/, "");
+      if (v4Link) {
+        const qs = { servicename: service.name, serviceversion: service.version, srvdname: service.serviceDefinition.name };
+        const detailResponse = await this.withSession(
+          () => h.request(v4Link.href, { qs, headers: { Accept: "application/*" } })
+        );
+        const parsed = this.parseODataV4ServiceGroup(detailResponse.body || "");
+        parsed.services = (parsed.services || []).map((s) => ({
+          ...s,
+          serviceUrlFull: s.serviceUrl ? `${baseUrl}${s.serviceUrl}` : void 0
+        }));
+        return this.success({ name: args.name, published: binding.published, odataVersion: "V4", ...parsed });
+      }
+      if (v2Link) {
+        const details = await this.withSession(
+          () => this.adtclient.bindingDetails(binding, idx)
+        );
+        return this.success({ name: args.name, published: binding.published, odataVersion: "V2", ...details });
+      }
+      this.fail(`rap_binding_details(${args.name}): binding has neither an OData V2 nor V4 link -- is it published? Call rap_publish_binding first.`);
     } catch (error2) {
       this.fail(formatError2(`rap_binding_details(${args.name})`, error2));
     }
@@ -64170,6 +64217,503 @@ var BoApprovalHandlers = class extends BaseHandler {
   }
 };
 
+// src/handlers/RapBoScaffoldHandlers.ts
+var import_tablecontents4 = __toESM(require_tablecontents());
+
+// src/lib/rapBoTemplates.ts
+var Z_NAME2 = /^[ZY][A-Z0-9_]*$/;
+var TABLE_NAME = /^[A-Z0-9_/]+$/;
+function cut2(s, max) {
+  return s.length > max ? s.slice(0, max).replace(/_+$/, "") : s;
+}
+function checkZ2(label, value, max) {
+  const v = value.toUpperCase().trim();
+  if (!Z_NAME2.test(v)) throw new Error(`${label} "${value}" must start with Z or Y and contain only A-Z, 0-9 and _`);
+  if (v.length > max) throw new Error(`${label} "${v}" is longer than ${max} characters`);
+  return v;
+}
+function deriveRapBoNames(input) {
+  const table = String(input.table || "").toUpperCase().trim();
+  if (!table || !TABLE_NAME.test(table)) {
+    throw new Error(`table "${input.table}" must be a DDIC table name, e.g. ZCUSTORDER`);
+  }
+  const rawBase = String(input.name || table).toUpperCase().trim().replace(/^[ZY]/, "").replace(/^_+/, "");
+  const base = rawBase.replace(/[^A-Z0-9_]/g, "");
+  if (!base) throw new Error(`Could not derive a base name from table "${table}" \u2014 pass "name" explicitly.`);
+  const draft = input.draft === true || input.draft === "true";
+  const serviceVersion = input.serviceVersion === "V2" ? "V2" : "V4";
+  const svcSuffix = serviceVersion === "V4" ? "_O4" : "_O2";
+  const names = {
+    table,
+    base,
+    description: input.description || `RAP BO for ${table}`,
+    draft,
+    serviceVersion,
+    interfaceView: checkZ2("interfaceView", input.interfaceView || `ZI_${cut2(base, 28)}`, 30),
+    projectionView: checkZ2("projectionView", input.projectionView || `ZC_${cut2(base, 28)}`, 30),
+    behaviorPoolClass: checkZ2("behaviorPoolClass", input.behaviorPoolClass || `ZBP_${cut2(base, 26)}`, 30),
+    serviceDefinition: checkZ2("serviceDefinition", input.serviceDefinition || `ZSD_${cut2(base, 26)}`, 30),
+    serviceBinding: checkZ2("serviceBinding", input.serviceBinding || `ZUI_${cut2(base, 26 - svcSuffix.length)}${svcSuffix}`, 30)
+  };
+  if (draft) {
+    names.draftTable = checkZ2("draftTable", input.draftTable || `${cut2(table, 14)}D`, 16);
+    if (names.draftTable === table) throw new Error("draftTable must differ from table \u2014 pass an explicit override.");
+  }
+  return names;
+}
+function camelAlias(fieldName) {
+  return fieldName.toLowerCase().split("_").filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("") || fieldName;
+}
+function relevantFields(fields) {
+  return fields.filter((f) => f.fieldName && f.fieldName.toUpperCase() !== "MANDT" && !f.fieldName.startsWith("."));
+}
+function assertFields(fields) {
+  if (!fields || fields.length === 0) throw new Error("no usable fields found for this table (DD03L returned nothing) \u2014 check the table name");
+  if (!fields.some((f) => f.isKey)) throw new Error("the table has no key fields besides MANDT \u2014 a CDS root view entity needs at least one key");
+}
+function semanticAnnotationsFor(f, rel) {
+  const dt = (f.dataType || "").toUpperCase();
+  if (dt !== "CURR" && dt !== "QUAN") return [];
+  const refField = f.refField;
+  if (!refField) return [];
+  const refExposed = rel.some((r) => r.fieldName.toUpperCase() === refField.toUpperCase());
+  if (!refExposed) return [];
+  const refAlias = camelAlias(refField);
+  return dt === "CURR" ? [`@Semantics.amount.currencyCode: '${refAlias}'`] : [`@Semantics.quantity.unitOfMeasure: '${refAlias}'`];
+}
+function buildInterfaceViewSource(names, fields) {
+  const rel = relevantFields(fields);
+  assertFields(rel);
+  const width = Math.max(...rel.map((f) => f.fieldName.toLowerCase().length));
+  const pad = (s) => s.padEnd(width);
+  const lines = rel.flatMap((f) => {
+    const annotations = semanticAnnotationsFor(f, rel).map((a) => `      ${a}`);
+    return [
+      ...annotations,
+      `      ${f.isKey ? "key " : "    "}${pad(f.fieldName.toLowerCase())} as ${camelAlias(f.fieldName)},`
+    ];
+  });
+  lines[lines.length - 1] = lines[lines.length - 1].replace(/,$/, "");
+  return [
+    `@AccessControl.authorizationCheck: #CHECK`,
+    `@EndUserText.label: '${names.description}'`,
+    `@Metadata.allowExtensions: true`,
+    `@ObjectModel.usageType:{`,
+    `  serviceQuality: #X,`,
+    `  sizeCategory: #S,`,
+    `  dataClass: #MIXED`,
+    `}`,
+    `define root view entity ${names.interfaceView}`,
+    `  as select from ${names.table.toLowerCase()}`,
+    `{`,
+    ...lines,
+    `}`
+  ].join("\n") + "\n";
+}
+function buildProjectionViewSource(names, fields) {
+  const rel = relevantFields(fields);
+  assertFields(rel);
+  const keyLines = rel.filter((f) => f.isKey).map((f) => `      key ${camelAlias(f.fieldName)},`);
+  const nonKey = rel.filter((f) => !f.isKey);
+  const nonKeyLines = nonKey.flatMap((f, i) => [
+    `      @UI.lineItem: [{ position: ${(i + 1) * 10} }]`,
+    `      @UI.identification: [{ position: ${(i + 1) * 10} }]`,
+    `      ${camelAlias(f.fieldName)},`
+  ]);
+  const allLines = [...keyLines, ...nonKeyLines];
+  const lastFieldIdx = allLines.map((l) => l.trim().startsWith("@") ? null : l).reduce((acc, l, i) => l !== null ? i : acc, -1);
+  if (lastFieldIdx >= 0) allLines[lastFieldIdx] = allLines[lastFieldIdx].replace(/,$/, "");
+  return [
+    `@EndUserText.label: '${names.description}'`,
+    `@Metadata.allowExtensions: true`,
+    `@UI.headerInfo.typeName: '${names.base}'`,
+    `@UI.headerInfo.typeNamePlural: '${names.base}s'`,
+    `@Search.searchable: true`,
+    `define root view entity ${names.projectionView}`,
+    `  as projection on ${names.interfaceView}`,
+    `{`,
+    ...allLines,
+    `}`
+  ].join("\n") + "\n";
+}
+function buildBehaviorDefRootSource(names, fields) {
+  const rel = relevantFields(fields);
+  assertFields(rel);
+  const width = Math.max(...rel.map((f) => camelAlias(f.fieldName).length));
+  const pad = (s) => s.padEnd(width);
+  const mappingLines = rel.map((f) => `    ${pad(camelAlias(f.fieldName))} = ${f.fieldName.toLowerCase()};`);
+  const draftClauses = names.draft ? [
+    `draft table ${names.draftTable.toLowerCase()}`
+  ] : [];
+  const draftActions = names.draft ? [
+    ``,
+    `  draft action Edit;`,
+    `  draft action Activate;`,
+    `  draft action Discard;`,
+    `  draft action Resume;`,
+    `  draft determine action Prepare;`
+  ] : [];
+  return [
+    `managed implementation in class ${names.behaviorPoolClass.toLowerCase()} unique;`,
+    ``,
+    `define behavior for ${names.interfaceView} alias ${names.base}`,
+    `persistent table ${names.table.toLowerCase()}`,
+    ...draftClauses,
+    `lock master`,
+    // No "authorization master ( instance )": it obliges a get_instance_authorizations handler
+    // in a local handler class, and this tool generates an EMPTY behavior pool. Activation does
+    // not catch the gap; the first Fiori Elements read does (it asks for update/delete
+    // availability per row) -> CX_RAP_HANDLER_NOT_IMPLEMENTED (method AUTHORITY_CHECK), wrapped
+    // as CX_SADL_DUMP_APPL_MODEL_ERROR. Found live on SFLIGHT. The guide tells the user to add
+    // it back together with the handler once they write real authorization logic.
+    `{`,
+    `  create;`,
+    `  update;`,
+    `  delete;`,
+    ...draftActions,
+    ``,
+    `  mapping for ${names.table.toLowerCase()}`,
+    `  {`,
+    ...mappingLines,
+    `  }`,
+    `}`
+  ].join("\n") + "\n";
+}
+function buildBehaviorDefProjectionSource(names) {
+  const draftActions = names.draft ? [
+    `  use action Edit;`,
+    `  use action Activate;`,
+    `  use action Discard;`,
+    `  use action Resume;`
+  ] : [];
+  return [
+    `projection;`,
+    ``,
+    `define behavior for ${names.projectionView} alias ${names.base}`,
+    `{`,
+    `  use create;`,
+    `  use update;`,
+    `  use delete;`,
+    ...draftActions,
+    `}`
+  ].join("\n") + "\n";
+}
+function buildBehaviorPoolClassSource(names) {
+  const cls = names.behaviorPoolClass.toLowerCase();
+  return [
+    `CLASS ${cls} DEFINITION PUBLIC ABSTRACT FINAL FOR BEHAVIOR OF ${names.interfaceView.toLowerCase()}.`,
+    `ENDCLASS.`,
+    ``,
+    `CLASS ${cls} IMPLEMENTATION.`,
+    `ENDCLASS.`
+  ].join("\n") + "\n";
+}
+function buildDraftTableSource(names, fields) {
+  if (!names.draftTable) throw new Error("draftTable name not set \u2014 call with draft=true");
+  const rel = relevantFields(fields);
+  assertFields(rel);
+  const width = Math.max(6, ...rel.map((f) => f.fieldName.toLowerCase().length));
+  const pad = (s) => s.padEnd(width);
+  const keyLines = rel.filter((f) => f.isKey).map((f) => `  key ${pad(f.fieldName.toLowerCase())} : ${ddlType2(f)} not null;`);
+  const nonKeyLines = rel.filter((f) => !f.isKey).map((f) => `      ${pad(f.fieldName.toLowerCase())} : ${ddlType2(f)};`);
+  return [
+    `@EndUserText.label : 'Draft table for ${names.interfaceView}'`,
+    `@AbapCatalog.enhancementCategory : #NOT_EXTENSIBLE`,
+    `@AbapCatalog.tableCategory : #TRANSPARENT`,
+    `@AbapCatalog.deliveryClass : #A`,
+    `@AbapCatalog.dataMaintenance : #RESTRICTED`,
+    `define table ${names.draftTable.toLowerCase()} {`,
+    `  key ${pad("mandt")} : mandt not null;`,
+    ...keyLines,
+    `      ${pad("draftuuid")} : sysuuid_x16;`,
+    `      ${pad("draftisdraft")} : abap.char(1);`,
+    `      ${pad("draftlastchangedat")} : timestampl;`,
+    ...nonKeyLines,
+    `}`
+  ].join("\n") + "\n";
+}
+function ddlType2(f) {
+  if (f.rollname) return f.rollname.toLowerCase();
+  const len = f.length || 10;
+  switch ((f.intType || "C").toUpperCase()) {
+    case "N":
+      return `abap.numc(${len})`;
+    case "D":
+      return "abap.dats";
+    case "T":
+      return "abap.tims";
+    case "P":
+      return `abap.dec(${len},${f.decimals || 0})`;
+    default:
+      return `abap.char(${len})`;
+  }
+}
+function buildServiceDefinitionSource(names) {
+  return [
+    `@EndUserText.label: '${names.description}'`,
+    `define service ${names.serviceDefinition}`,
+    `{`,
+    `  expose ${names.projectionView} as ${names.base};`,
+    `}`
+  ].join("\n") + "\n";
+}
+function buildGuiGuide2(names) {
+  const steps = [
+    `1. Review the field aliases (beautification) in ${names.interfaceView} and adjust names/annotations to taste.`,
+    `2. Add UI annotations (@UI.selectionField, @UI.facet, value helps, etc.) to ${names.projectionView} as needed \u2014 the generated one only has a minimal @UI.lineItem/@UI.identification per field, enough for a plain Fiori Elements list-report.`,
+    `3. Service binding (SRVB) is NOT auto-created (see tool notes on why). In ADT/Eclipse or SAP GUI: right-click ${names.serviceDefinition} -> New Service Binding -> name "${names.serviceBinding}", binding type "OData ${names.serviceVersion} - UI". Then call rap_publish_binding(name="${names.serviceBinding}", version="0001", action="publish") to publish it, and rap_binding_details(name="${names.serviceBinding}") to get the service URL.`,
+    `4. Once published, preview via the service URL or generate a Fiori Elements app (App Generator / SEGW-equivalent wizard) pointed at ${names.serviceBinding}.`,
+    `5. No "strict" declaration was generated in the behavior definitions \u2014 its exact syntax (plain "strict;" vs "strict(N);") varies enough across releases that guessing it risked a broken deploy. If your release supports it, add it back yourself (in ADT, under ${names.interfaceView}'s and ${names.projectionView}'s behavior definitions) for the extra compile-time checks it gives you.`,
+    `6. ${names.projectionView} was generated without a "provider contract" clause (e.g. "transactional_query") after the same clause failed to activate on a real system with "Unexpected word \\"provider\\"". If your release supports it, add the appropriate provider contract back to ${names.projectionView} yourself \u2014 it is standard for a RAP consumption view on current releases.`,
+    `7. No "authorization master ( instance )" was generated: it requires a get_instance_authorizations handler in ${names.behaviorPoolClass}, which is generated empty. Without the handler the first read from a UI dumps (CX_RAP_HANDLER_NOT_IMPLEMENTED, AUTHORITY_CHECK). When you add authorization checks, add the clause to ${names.interfaceView}'s behavior definition AND implement the handler in the class's local types.`
+  ];
+  if (names.draft) {
+    steps.push(
+      `8. Draft handling requested: the generated ${names.draftTable} table is a best-effort starting point (MANDT + business keys + DRAFTUUID/DRAFTISDRAFT/DRAFTLASTCHANGEDAT). Compare it against a system-generated draft table (Data Modeler "Generate Draft Table" on ${names.interfaceView}, or an existing draft-enabled CDS view on the same release) before deploying \u2014 the exact technical draft admin fields SAP expects have changed across NW/S4 releases, and this preset is not verified end to end.`
+    );
+  }
+  return steps;
+}
+
+// src/handlers/RapBoScaffoldHandlers.ts
+var RapBoScaffoldHandlers = class extends BaseHandler {
+  getTools() {
+    return [
+      {
+        name: "rap_bo_scaffold",
+        annotations: { title: "RAP: full Business Object scaffold" },
+        description: 'Scaffold a complete managed RAP Business Object from an existing DDIC table: CDS interface (root) view entity, CDS projection (consumption) view entity, behavior definitions for both, an empty managed behavior pool class, a service definition, and (optionally) a draft table. Field names are read from DD03L and beautified to UpperCamelCase. mode=check: pre-flight only (table/fields lookup, name-collision check). mode=preview (default): pre-flight + all generated sources + an ordered guide for the steps this tool cannot do (service binding creation, UI annotation tuning). mode=deploy: also creates and activates every object via ADT, in RAP dependency order (interface view -> [draft table] -> root behavior definition -> behavior pool class -> projection view -> projection behavior definition -> service definition; the root behavior definition must be active before the behavior pool class activates, or SAP rejects the class with "no behavior definition for <view>"). The service binding (SRVB) is never auto-created \u2014 see the guide for that step, then use rap_publish_binding to publish it. Complements rap_binding_details/rap_publish_binding, which operate on an existing binding.',
+        inputSchema: {
+          type: "object",
+          properties: {
+            table: { type: "string", description: "Source DDIC table to build the BO on, e.g. ZCUSTORDER" },
+            name: { type: "string", description: "Base name for generated artifacts (default: table name without its Z/Y prefix), e.g. CUSTORDER" },
+            description: { type: "string", description: 'Short description used on all generated objects (default: "RAP BO for <table>")' },
+            draft: { type: "boolean", description: "Include draft handling (draft table + draft actions). Default false \u2014 see guide caveat when true." },
+            serviceVersion: { type: "string", description: "OData version for naming/guide only (SRVB is not auto-created). Default V4", enum: ["V4", "V2"] },
+            mode: { type: "string", description: "check | preview (default) | deploy", enum: ["check", "preview", "deploy"] },
+            package: { type: "string", description: "deploy: package ($TMP allowed)" },
+            transport: { type: "string", description: "deploy: transport request (non-$TMP)" },
+            interfaceView: { type: "string", description: "Override: CDS interface (root) view entity name (default ZI_<name>)" },
+            projectionView: { type: "string", description: "Override: CDS projection view entity name (default ZC_<name>)" },
+            behaviorPoolClass: { type: "string", description: "Override: behavior pool class name (default ZBP_<name>)" },
+            serviceDefinition: { type: "string", description: "Override: service definition name (default ZSD_<name>)" },
+            serviceBinding: { type: "string", description: "Override: service binding name for the guide text only (default ZUI_<name>_O4/_O2)" },
+            draftTable: { type: "string", description: "Override: draft table name (default <table>D, max 16 chars)" }
+          },
+          required: ["table"]
+        }
+      }
+    ];
+  }
+  async handle(toolName, args) {
+    switch (toolName) {
+      case "rap_bo_scaffold":
+        return this.handleScaffold(args);
+      default:
+        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${toolName}`);
+    }
+  }
+  // ─── SQL helper (same pattern as BoApprovalHandlers.sqlRows) ───────────────
+  async sqlRows(sql, limit = 400) {
+    const h = this.adtclient.h;
+    const res = await this.withSession(async () => {
+      const response = await h.request("/sap/bc/adt/datapreview/freestyle", {
+        qs: { rowNumber: limit },
+        headers: { Accept: "application/*", "Content-Type": "text/plain" },
+        method: "POST",
+        body: sql
+      });
+      return (0, import_tablecontents4.parseQueryResponse)(response.body);
+    });
+    return res?.values || [];
+  }
+  // Runs a query and tells apart "ran fine, found nothing" from "the query itself failed"
+  // (connection drop, TLS error, syntax error, auth expiry, ...). Swallowing every exception
+  // here used to turn a real connectivity error into a misleading "table not found" blocker —
+  // found the hard way via a live TLS failure during testing. Callers get both the rows and
+  // the error message (if any) and decide what to report.
+  async queryRows(sql) {
+    try {
+      return { rows: await this.sqlRows(sql) };
+    } catch (e) {
+      return { rows: [], error: formatError2("query", e) };
+    }
+  }
+  async collectPreflight(names) {
+    const q = (s) => s.replace(/'/g, "''");
+    const fieldsResult = await this.queryRows(
+      `SELECT fieldname, keyflag, rollname, inttype, datatype, reffield, leng, decimals FROM dd03l WHERE tabname = '${q(names.table)}' AND as4local = 'A' ORDER BY position`
+    );
+    const rows = fieldsResult.rows;
+    const fields = rows.map((r) => ({
+      fieldName: String(r.FIELDNAME || "").toUpperCase(),
+      isKey: String(r.KEYFLAG || "").toUpperCase() === "X",
+      rollname: r.ROLLNAME ? String(r.ROLLNAME) : void 0,
+      intType: r.INTTYPE ? String(r.INTTYPE) : void 0,
+      dataType: r.DATATYPE ? String(r.DATATYPE) : void 0,
+      refField: r.REFFIELD ? String(r.REFFIELD) : void 0,
+      length: r.LENG ? Number(r.LENG) : void 0,
+      decimals: r.DECIMALS ? Number(r.DECIMALS) : void 0
+    }));
+    const namesToCheck = [names.interfaceView, names.projectionView, names.behaviorPoolClass, names.serviceDefinition, names.draftTable].filter(Boolean);
+    const inClause = namesToCheck.map((n) => `'${q(n)}'`).join(", ");
+    const tadirResult = namesToCheck.length ? await this.queryRows(`SELECT object, obj_name FROM tadir WHERE pgmid = 'R3TR' AND obj_name IN (${inClause})`) : { rows: [] };
+    const tadir = tadirResult.rows;
+    const exists = (n, object3) => !!n && tadir.some((r) => String(r.OBJ_NAME).toUpperCase() === n.toUpperCase() && (!object3 || String(r.OBJECT).toUpperCase() === object3));
+    const blockers = [];
+    const warnings = [];
+    const rel = relevantFields(fields);
+    if (fieldsResult.error) {
+      blockers.push(`Could not read ${names.table} from DD03L \u2014 this looks like a connection or query error, not a missing table: ${fieldsResult.error}`);
+    } else if (rel.length === 0) {
+      blockers.push(`Table ${names.table} not found in DD03L (as4local = 'A') \u2014 check the table name and that it is active.`);
+    } else if (!rel.some((f) => f.isKey)) {
+      blockers.push(`Table ${names.table} has no key fields besides MANDT \u2014 a CDS root view entity needs at least one key.`);
+    }
+    if (tadirResult.error) {
+      warnings.push(`Could not check TADIR for existing objects \u2014 existence warnings below may be incomplete: ${tadirResult.error}`);
+    }
+    if (exists(names.interfaceView, "DDLS")) warnings.push(`${names.interfaceView} already exists \u2014 deploy overwrites its source.`);
+    if (exists(names.projectionView, "DDLS")) warnings.push(`${names.projectionView} already exists \u2014 deploy overwrites its source.`);
+    if (exists(names.behaviorPoolClass)) warnings.push(`${names.behaviorPoolClass} already exists \u2014 deploy overwrites its source (any handler methods you added will be lost).`);
+    if (exists(names.serviceDefinition)) warnings.push(`${names.serviceDefinition} already exists \u2014 deploy overwrites its source.`);
+    if (names.draftTable && exists(names.draftTable)) warnings.push(`${names.draftTable} already exists \u2014 deploy keeps it unchanged.`);
+    if (exists(names.interfaceView, "BDEF")) warnings.push(`Behavior definition for ${names.interfaceView} already exists \u2014 deploy overwrites its source.`);
+    if (exists(names.projectionView, "BDEF")) warnings.push(`Behavior definition for ${names.projectionView} already exists \u2014 deploy overwrites its source.`);
+    return {
+      blockers,
+      warnings,
+      fields,
+      existing: {
+        interfaceView: exists(names.interfaceView, "DDLS"),
+        projectionView: exists(names.projectionView, "DDLS"),
+        behaviorPoolClass: exists(names.behaviorPoolClass),
+        serviceDefinition: exists(names.serviceDefinition),
+        draftTable: !!names.draftTable && exists(names.draftTable),
+        bdefRoot: exists(names.interfaceView, "BDEF"),
+        bdefProjection: exists(names.projectionView, "BDEF")
+      }
+    };
+  }
+  // ─── main ──────────────────────────────────────────────────────────────────
+  async handleScaffold(args) {
+    let names;
+    try {
+      names = deriveRapBoNames(args);
+    } catch (e) {
+      this.fail(`rap_bo_scaffold: ${e.message}`);
+    }
+    const mode2 = String(args.mode || "preview");
+    await this.notify(`rap_bo_scaffold: pre-flight for ${names.table} -> ${names.interfaceView}...`);
+    const pre = await this.collectPreflight(names);
+    if (mode2 === "check" || pre.blockers.length) {
+      return this.success({
+        mode: pre.blockers.length && mode2 !== "check" ? `${mode2} (stopped by blockers)` : "check",
+        names,
+        preflight: pre
+      });
+    }
+    let sources;
+    try {
+      sources = {
+        [names.interfaceView]: buildInterfaceViewSource(names, pre.fields),
+        [names.projectionView]: buildProjectionViewSource(names, pre.fields),
+        [names.behaviorPoolClass]: buildBehaviorPoolClassSource(names),
+        [`${names.interfaceView} (BDEF)`]: buildBehaviorDefRootSource(names, pre.fields),
+        [`${names.projectionView} (BDEF)`]: buildBehaviorDefProjectionSource(names),
+        [names.serviceDefinition]: buildServiceDefinitionSource(names)
+      };
+      if (names.draftTable) sources[names.draftTable] = buildDraftTableSource(names, pre.fields);
+    } catch (e) {
+      this.fail(`rap_bo_scaffold: ${e.message}`);
+    }
+    const guide = buildGuiGuide2(names);
+    if (mode2 !== "deploy") {
+      return this.success({
+        mode: "preview",
+        names,
+        preflight: pre,
+        sources,
+        guide,
+        next: 'Call again with mode="deploy" and package (and transport) to create and activate everything except the service binding; then follow the guide.'
+      });
+    }
+    const deployed = await this.deploy(args, names, pre, sources);
+    return this.success({
+      mode: "deploy",
+      names,
+      preflight: pre,
+      steps: deployed.steps,
+      guide
+    });
+  }
+  async deploy(args, names, pre, sources) {
+    if (!args.package) this.fail("rap_bo_scaffold(deploy): package is required ($TMP allowed).");
+    const pkg = String(args.package).toUpperCase();
+    if (pkg !== "$TMP" && !args.transport) this.fail("rap_bo_scaffold(deploy): transport is required for non-$TMP packages.");
+    const transport = args.transport ? String(args.transport).toUpperCase() : void 0;
+    const objects = new ObjectHandlers(this.adtclient);
+    const source = new SourceHandlers(this.adtclient);
+    for (const h of [objects, source]) {
+      const self2 = this;
+      if (self2._notify) h.setNotify(self2._notify);
+      if (self2._elicit) h.setElicit(self2._elicit);
+    }
+    const steps = [];
+    const run = async (step, fn) => {
+      await this.notify(`rap_bo_scaffold: ${step}...`);
+      try {
+        const r = await fn();
+        const payload = parseToolPayload(r);
+        if (payload?.activated === false || payload?.success === false) {
+          throw new Error(JSON.stringify(payload.errors || payload.messages || payload));
+        }
+        steps.push({ step, ok: true, detail: payload?.message });
+      } catch (e) {
+        steps.push({ step, ok: false, detail: e?.message || String(e) });
+        throw new Error(`${step}: ${e?.message || e}`);
+      }
+    };
+    const createWriteActivate = async (name, type, source_, description, existsAlready) => {
+      if (!existsAlready) {
+        await run(`create ${type} ${name}`, () => objects.validateAndHandle(
+          "abap_create",
+          { name, type, description, package: pkg, transport }
+        ));
+      }
+      await run(`write ${type} ${name}`, () => source.validateAndHandle(
+        "abap_set_source",
+        { name, type, source: source_, transport }
+      ));
+      await run(`activate ${type} ${name}`, () => objects.validateAndHandle("abap_activate", { name, type }));
+    };
+    try {
+      await createWriteActivate(names.interfaceView, "DDLS", sources[names.interfaceView], names.description, pre.existing.interfaceView);
+      if (names.draftTable) {
+        if (!pre.existing.draftTable) {
+          await createWriteActivate(names.draftTable, "TABL", sources[names.draftTable], `Draft table for ${names.interfaceView}`, false);
+        } else {
+          steps.push({ step: `table ${names.draftTable} already exists \u2014 kept`, ok: true });
+        }
+      }
+      await createWriteActivate(names.interfaceView, "BDEF", sources[`${names.interfaceView} (BDEF)`], `Behavior def for ${names.interfaceView}`, pre.existing.bdefRoot);
+      await createWriteActivate(names.behaviorPoolClass, "CLAS", sources[names.behaviorPoolClass], `Behavior pool for ${names.interfaceView}`, pre.existing.behaviorPoolClass);
+      await createWriteActivate(names.projectionView, "DDLS", sources[names.projectionView], names.description, pre.existing.projectionView);
+      await createWriteActivate(names.projectionView, "BDEF", sources[`${names.projectionView} (BDEF)`], `Behavior def for ${names.projectionView}`, pre.existing.bdefProjection);
+      await createWriteActivate(names.serviceDefinition, "SRVD", sources[names.serviceDefinition], names.description, pre.existing.serviceDefinition);
+    } catch (error2) {
+      this.fail(
+        `rap_bo_scaffold(deploy) stopped: ${error2?.message || error2}
+` + steps.map((s) => `${s.ok ? "OK " : "ERR"} ${s.step}${s.detail ? ` \u2014 ${s.detail}` : ""}`).join("\n") + `
+
+The service binding is never auto-created \u2014 see the guide for that manual step.`
+      );
+    }
+    return { steps };
+  }
+};
+
 // src/lib/auth.ts
 var https = __toESM(require("https"));
 var http = __toESM(require("http"));
@@ -64637,7 +65181,8 @@ function createSystemEntry(auth, elicitFn, notifyFn, samplingFn) {
     new DdicHandlers(client),
     new BspHandlers(client),
     new WorkflowHandlers(client),
-    new BoApprovalHandlers(client)
+    new BoApprovalHandlers(client),
+    new RapBoScaffoldHandlers(client)
   ];
   for (const h of handlers) {
     h.setElicit(elicitFn);

@@ -3,6 +3,7 @@ import { BaseHandler } from './BaseHandler.js';
 import type { ToolDefinition } from '../types/tools.js';
 import { formatError } from '../lib/errors.js';
 import { parseServiceBinding } from 'abap-adt-api';
+import { XMLParser } from 'fast-xml-parser';
 
 export class RapHandlers extends BaseHandler {
   getTools(): ToolDefinition[] {
@@ -52,6 +53,32 @@ export class RapHandlers extends BaseHandler {
     }
   }
 
+  // The abap-adt-api library's bindingDetails()/extractBindingLinks() only understand OData V2
+  // bindings: extractBindingLinks() filters binding.links for rel === ".../categories/odatav2"
+  // and, finding nothing for a V4 binding, returns [] — then bindingDetails() destructures
+  // queries[0] and crashes with "Cannot destructure property 'query' of 'queries[index]' as it
+  // is undefined". Found live testing rap_bo_scaffold's OData V4 output. Fixed by handling the
+  // V4 "serviceGroup" response ourselves and only delegating to the library for real V2 bindings.
+  private parseODataV4ServiceGroup(xml: string): any {
+    const parser = new XMLParser({ removeNSPrefix: true, ignoreAttributes: false, attributeNamePrefix: '@_' });
+    const doc = parser.parse(xml || '');
+    const group = doc?.serviceGroup;
+    if (!group) return { services: [] };
+    const arr = (v: any) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+    const services = arr(group.services).map((svc: any) => {
+      const info = svc.serviceInformation;
+      const collections = arr(info?.collection).map((c: any) => c['@_name']).filter(Boolean);
+      return {
+        serviceId: svc['@_serviceId'],
+        serviceVersion: svc['@_serviceVersion'],
+        serviceUrl: svc['@_serviceUrl'],
+        annotationUrl: svc['@_annotationUrl'] || undefined,
+        entitySets: collections,
+      };
+    });
+    return { serviceUrlPrefix: group['@_serviceUrlPrefix'], services };
+  }
+
   private async handleBindingDetails(args: any): Promise<any> {
     const encoded = args.name.replace(/\//g, '%2f').toLowerCase();
     const bindingUrl = `/sap/bc/adt/businessservices/bindings/${encoded}`;
@@ -61,10 +88,35 @@ export class RapHandlers extends BaseHandler {
         h.request(bindingUrl, { headers: { Accept: 'application/*' } })
       ) as any;
       const binding = parseServiceBinding(response.body || '');
-      const details = await this.withSession(() =>
-        this.adtclient.bindingDetails(binding, args.index ?? 0)
-      );
-      return this.success({ name: args.name, ...details });
+      const idx = args.index ?? 0;
+      const service = binding.services?.[idx];
+      if (!service) this.fail(`rap_binding_details(${args.name}): no service at index ${idx} in this binding (it has ${binding.services?.length ?? 0}).`);
+
+      const v4Link = binding.links.find((l: any) => l.rel === 'http://www.sap.com/categories/odatav4');
+      const v2Link = binding.links.find((l: any) => l.rel === 'http://www.sap.com/categories/odatav2');
+      const baseUrl = String(h.baseURL || '').replace(/\/$/, '');
+
+      if (v4Link) {
+        const qs = { servicename: service.name, serviceversion: service.version, srvdname: service.serviceDefinition.name };
+        const detailResponse = await this.withSession(() =>
+          h.request(v4Link.href, { qs, headers: { Accept: 'application/*' } })
+        ) as any;
+        const parsed = this.parseODataV4ServiceGroup(detailResponse.body || '');
+        parsed.services = (parsed.services || []).map((s: any) => ({
+          ...s,
+          serviceUrlFull: s.serviceUrl ? `${baseUrl}${s.serviceUrl}` : undefined,
+        }));
+        return this.success({ name: args.name, published: binding.published, odataVersion: 'V4', ...parsed });
+      }
+
+      if (v2Link) {
+        const details = await this.withSession(() =>
+          this.adtclient.bindingDetails(binding, idx)
+        );
+        return this.success({ name: args.name, published: binding.published, odataVersion: 'V2', ...details });
+      }
+
+      this.fail(`rap_binding_details(${args.name}): binding has neither an OData V2 nor V4 link -- is it published? Call rap_publish_binding first.`);
     } catch (error: any) {
       this.fail(formatError(`rap_binding_details(${args.name})`, error));
     }

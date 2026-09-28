@@ -1,6 +1,6 @@
 {
   "name": "sap-workflow-adt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for SAP ABAP + SAP Business Workflow development via ADT (fork of dassian-adt).",
   "main": "dist/index.js",
   "scripts": {
@@ -41,7 +41,8 @@
     "@types/node": "^22.10.10",
     "abap-adt-api": "^7.1.2",
     "dotenv": "^16.4.7",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "fast-xml-parser": "^4.5.5"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

@@ -1,9 +1,9 @@
 {
   "manifest_version": "0.2",
   "name": "sap-workflow-adt",
-  "version": "0.2.0",
-  "display_name": "SAP Workflow ADT — ABAP + SAP Business Workflow",
-  "description": "Fork of dassian-adt with extra tools for SAP Business Workflow development (package_create, msag_set_messages, wf_class_scaffold, wf_bo_approval_scaffold).",
+  "version": "0.3.0",
+  "display_name": "SAP Workflow ADT \u2014 ABAP + SAP Business Workflow",
+  "description": "Fork of dassian-adt with extra tools for SAP Business Workflow development (package_create, msag_set_messages, wf_class_scaffold, wf_bo_approval_scaffold, rap_bo_scaffold).",
   "author": {
     "name": "Gabriela Storino",
     "email": "gabriela.storino.ig@gmail.com"
@@ -130,6 +130,10 @@
     {
       "name": "wf_bo_approval_scaffold",
       "description": "Approve/reject workflow on a Z subtype of any BOR object: pre-flight, ABAP objects via ADT, SAP GUI guide"
+    },
+    {
+      "name": "rap_bo_scaffold",
+      "description": "Full managed RAP Business Object scaffold from a DDIC table (CDS interface + projection views, behavior definitions, behavior pool class, service definition, optional draft table)"
     }
   ],
   "compatibility": {
